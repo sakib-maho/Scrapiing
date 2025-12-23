@@ -1,139 +1,169 @@
 """
 Scrapfly API Client for Web Scraping
+- Keeps a stable Scrapfly session key for cookie + navigation + proxy stickiness
+- Forwards custom headers using Scrapfly "headers[Name]=Value" format
+- Returns browser_data (XHR capture) and response headers if present
 """
-import requests
+
+from __future__ import annotations
+
+import re
 import time
-import json
-from typing import Dict, Optional, Any
-from config import SCRAPFLY_CONFIG, REQUEST_TIMEOUT, DELAY_BETWEEN_REQUESTS
+import uuid
+from typing import Any, Dict, Optional
+
+import requests
 from retrying import retry
+
+from config import SCRAPFLY_CONFIG, REQUEST_TIMEOUT, DELAY_BETWEEN_REQUESTS
 
 
 class ScrapflyClient:
-    """Client for interacting with Scrapfly API"""
-    
     def __init__(self, api_key: str = None, session_id: str = None):
         self.api_key = api_key or SCRAPFLY_CONFIG["api_key"]
         self.api_url = SCRAPFLY_CONFIG["url"]
-        self.session_id = session_id  # Scrapfly session ID for maintaining cookies
+
+        # Always keep a stable session unless caller explicitly sets one.
+        # This helps with cookie continuity and sticky proxy behavior.
+        self.session_id = session_id or f"gumtree-{uuid.uuid4().hex}"
+
         self.session = requests.Session()
-        self.session.headers.update({
-            "X-API-KEY": self.api_key,
-            "Content-Type": "application/json",
-        })
-    
+        self.session.headers.update({"Accept": "application/json"})
+
+    @staticmethod
+    def _infer_country(url: str, fallback: str) -> str:
+        if "gumtree.com.au" in (url or "").lower():
+            return "AU"
+        return fallback
+
+    @staticmethod
+    def _flatten_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+        """
+        Scrapfly supports passing headers via query params:
+          headers[User-Agent]=...
+          headers[Accept-Language]=...
+        """
+        out: Dict[str, str] = {}
+        if not headers:
+            return out
+        for k, v in headers.items():
+            if v is None:
+                continue
+            out[f"headers[{k}]"] = str(v)
+        return out
+
     @retry(stop_max_attempt_number=3, wait_fixed=2000)
-    def scrape(self, url: str, **kwargs) -> Dict[str, Any]:
+    def scrape(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         """
-        Scrape a URL using Scrapfly API
-        
-        Args:
-            url: URL to scrape
-            **kwargs: Additional Scrapfly parameters
-        
-        Returns:
-            Dictionary containing response data
+        Returns a dict compatible with PhoneExtractor expectations:
+          {
+            "success": bool,
+            "url": ...,
+            "html": ...,
+            "response": <full scrapfly JSON>,
+            "browser_data": ...,
+            ...
+          }
         """
-        # Extract headers if provided
-        custom_headers = kwargs.pop("headers", None)
-        
-        # Build request payload
-        payload = {
+        method = (method or "GET").upper()
+
+        render_js = kwargs.pop("render_js", SCRAPFLY_CONFIG.get("render_js", True))
+        premium_proxy = kwargs.pop("premium_proxy", SCRAPFLY_CONFIG.get("premium_proxy", True))
+        asp = kwargs.pop("asp", SCRAPFLY_CONFIG.get("asp", True))
+
+        # This is Scrapfly debug param (not your app debug).
+        # When True, Scrapfly often returns richer diagnostic/network structures.
+        debug = kwargs.pop("debug", False)
+
+        # Sticky proxy keeps the same exit IP per session (helps stateful flows).
+        session_sticky_proxy = kwargs.pop("session_sticky_proxy", True)
+
+        country = self._infer_country(url, kwargs.pop("country", SCRAPFLY_CONFIG.get("country", "GB")))
+
+        params: Dict[str, Any] = {
+            "key": self.api_key,
             "url": url,
-            "render_js": kwargs.get("render_js", SCRAPFLY_CONFIG.get("render_js", True)),
-            "country": kwargs.get("country", SCRAPFLY_CONFIG.get("country", "GB")),
-            "premium_proxy": kwargs.get("premium_proxy", SCRAPFLY_CONFIG.get("premium_proxy", True)),
-            "asp": kwargs.get("asp", SCRAPFLY_CONFIG.get("asp", True)),
+            "render_js": str(bool(render_js)).lower(),
+            "country": country,
+            "premium_proxy": str(bool(premium_proxy)).lower(),
+            "asp": str(bool(asp)).lower(),
+            "session": self.session_id,
+            "session_sticky_proxy": str(bool(session_sticky_proxy)).lower(),
         }
-        
-        # Add custom headers if provided
-        if custom_headers:
-            payload["headers"] = custom_headers
-        
-        # Add any other additional parameters
-        for key, value in kwargs.items():
-            if key not in ["render_js", "country", "premium_proxy", "asp", "headers"]:
-                payload[key] = value
-        
+
+        if debug:
+            params["debug"] = "true"
+
+        # Pass-through any other Scrapfly params
+        for k, v in kwargs.items():
+            if v is None:
+                continue
+            params[k] = v
+
+        # Forward headers in Scrapfly "headers[...]" form
+        params.update(self._flatten_headers(headers))
+
         try:
-            # Scrapfly API uses GET with query parameters
-            # Detect country from URL if Australian
-            country = payload["country"]
-            if "gumtree.com.au" in url:
-                country = "AU"
-            
-            # Build query parameters
-            query_params = {
-                "url": url,
-                "render_js": str(payload["render_js"]).lower(),
-                "country": country,
-                "premium_proxy": str(payload["premium_proxy"]).lower(),
-                "asp": str(payload["asp"]).lower(),
-            }
-            
-            # Add session ID if available (for maintaining authentication)
-            if self.session_id:
-                query_params["session"] = self.session_id
-            
-            # Add headers as a JSON string if provided
-            if custom_headers:
-                query_params["headers"] = json.dumps(custom_headers)
-            
-            response = self.session.get(
-                self.api_url,
-                params=query_params,
-                timeout=REQUEST_TIMEOUT
+            resp = self.session.request(
+                method=method,
+                url=self.api_url,
+                params=params,
+                data=body,
+                timeout=REQUEST_TIMEOUT,
             )
-            
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Extract and store session ID from response if available
-            result_data = data.get("result", {})
-            if "session" in result_data and not self.session_id:
-                self.session_id = result_data["session"]
-            
-            # Add delay between requests
+            resp.raise_for_status()
+
+            data = resp.json() if resp.content else {}
+            result = data.get("result", {}) if isinstance(data, dict) else {}
+            if not isinstance(result, dict):
+                result = {}
+
             time.sleep(DELAY_BETWEEN_REQUESTS)
-            
+
             return {
                 "success": True,
                 "url": url,
-                "html": result_data.get("content", ""),
-                "status_code": result_data.get("status_code", 200),
-                "response": data,
-                "session_id": self.session_id,  # Return session ID for reuse
+                "html": result.get("content", "") or "",
+                "status_code": result.get("status_code", resp.status_code),
+                "cookies": result.get("cookies", {}) or {},
+                "browser_data": result.get("browser_data", {}) or {},
+                "result_headers": result.get("headers", {}) or {},
+                "response": data,  # full payload (PhoneExtractor mines this)
+                "session_id": self.session_id,
+                "country": country,
             }
-            
+
         except requests.exceptions.HTTPError as e:
-            # Handle rate limiting (429 errors)
-            if e.response.status_code == 429:
-                retry_after = e.response.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        wait_seconds = int(retry_after)
-                    except ValueError:
-                        wait_seconds = 60  # Default to 60 seconds
-                else:
-                    wait_seconds = 60  # Default wait time
-                
+            status = e.response.status_code if getattr(e, "response", None) is not None else 0
+            if status == 429:
+                retry_after = 60
+                ra = e.response.headers.get("Retry-After") if e.response is not None else None
+                if ra and re.match(r"^\d+$", ra.strip()):
+                    retry_after = int(ra.strip())
                 return {
                     "success": False,
                     "url": url,
-                    "error": f"429 Rate Limit Exceeded. Wait {wait_seconds} seconds before retrying.",
+                    "error": f"429 Rate Limit Exceeded. Wait {retry_after} seconds before retrying.",
                     "html": "",
                     "status_code": 429,
-                    "retry_after": wait_seconds,
+                    "retry_after": retry_after,
                 }
-            
             return {
                 "success": False,
                 "url": url,
                 "error": str(e),
                 "html": "",
-                "status_code": e.response.status_code if hasattr(e, 'response') else 0,
+                "status_code": status,
             }
+
         except requests.exceptions.RequestException as e:
             return {
                 "success": False,
@@ -142,41 +172,9 @@ class ScrapflyClient:
                 "html": "",
                 "status_code": 0,
             }
-    
+
     def scrape_with_headers(self, url: str, headers: Dict = None, **kwargs) -> Dict[str, Any]:
-        """
-        Scrape a URL with custom headers
-        
-        Args:
-            url: URL to scrape
-            headers: Custom headers to use (Note: Scrapfly handles headers automatically)
-            **kwargs: Additional Scrapfly parameters
-        
-        Returns:
-            Dictionary containing response data
-        """
-        # Scrapfly automatically handles headers, so we can just call scrape
-        # Custom headers are optional as Scrapfly uses its own headers
-        return self.scrape(url, **kwargs)
-    
-    def get_cookies(self, url: str) -> Dict[str, str]:
-        """
-        Get cookies from a Scrapfly request
-        
-        Args:
-            url: URL to get cookies from
-        
-        Returns:
-            Dictionary of cookies
-        """
-        result = self.scrape(url)
-        if result["success"]:
-            # Extract cookies from response if available
-            response_data = result.get("response", {})
-            cookies = response_data.get("result", {}).get("cookies", {})
-            return cookies
-        return {}
-    
+        return self.scrape(url, headers=headers, **kwargs)
+
     def close(self):
-        """Close the session"""
         self.session.close()
