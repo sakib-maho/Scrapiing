@@ -1,367 +1,283 @@
+"""phone_extractor.py
+
+Gumtree phone extraction.
+
+Important: Gumtree often hides phone numbers behind a "Show number"/"Call" button.
+For Gumtree AU, Gumtree explicitly notes that phone numbers may not be visible when
+accessing from outside Australia (e.g., overseas/VPN). Therefore, using an AU proxy
+is typically required to see/reveal the number.
+
+This extractor tries, in order:
+  1) Direct tel: links or obvious phone text in HTML
+  2) Rendered HTML (render_js) if the first soup was non-rendered
+  3) Scrapfly browser_data.xhr_call inspection (common for "reveal" endpoints)
+  4) A tiny js_scenario that clicks a likely "show/call/phone" button and then
+     re-checks both rendered HTML and XHR captures.
+
+Scrapfly docs used:
+ - Javascript Rendering / XHR capture: https://scrapfly.io/docs/scrape-api/javascript-rendering
+ - Javascript Scenario: https://scrapfly.io/docs/scrape-api/javascript-scenario
 """
-Phone number extraction with authentication support
-Handles phone numbers that may be behind login wall or require secondary API calls
-"""
+
+from __future__ import annotations
+
 import re
-import json
-from typing import Optional, Dict
+from typing import Any, Dict, List, Optional
+
 from bs4 import BeautifulSoup
+
 from scrapfly_client import ScrapflyClient
 
 
 class PhoneExtractor:
-    """Extract phone numbers with authentication support"""
-    
+    """Extract phone numbers from Gumtree listing pages."""
+
+    # Generic phone patterns (AU + international). We keep them permissive and
+    # then normalize.
+    PHONE_RE = re.compile(
+        r"(?:\+\d{1,3}[\s\-]?)?(?:\(?0\)?\s?)?(?:\d[\s\-]?){8,12}"
+    )
+
+    # Slightly stricter AU pattern (common formats)
+    AU_PHONE_RE = re.compile(
+        r"(?:\+?61\s?[2-478]\s?\d{4}\s?\d{4}|0[2-478]\s?\d{4}\s?\d{4}|04\s?\d{2}\s?\d{3}\s?\d{3})"
+    )
+
     def __init__(self, client: ScrapflyClient):
         self.client = client
-    
-    def extract_phone(self, soup: BeautifulSoup, url: str, job_id: str = None) -> Optional[str]:
-        """
-        Extract phone number from listing page
-        
+
+    # -----------------------------
+    # Public API
+    # -----------------------------
+    def extract_phone(
+        self,
+        soup: BeautifulSoup,
+        listing_url: str,
+        job_id: str = "",
+        scrape_result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Extract phone number for a listing.
+
         Args:
-            soup: BeautifulSoup object of the listing page
-            url: Listing URL
-            job_id: Job ID to exclude from phone patterns
-        
+            soup: BeautifulSoup of the listing HTML already fetched.
+            listing_url: listing URL
+            job_id: numeric id if available
+            scrape_result: optional raw result dict returned by ScrapflyClient.scrape
+
         Returns:
-            Phone number if found, None otherwise
+            E.164-like string (best effort) or None.
         """
-        # Step 1: Check if phone is directly visible in HTML (after login)
-        phone = self._extract_phone_from_html(soup, job_id)
+
+        # 1) Obvious from HTML (tel: links, text blobs)
+        phone = self._extract_from_html(soup, prefer_au="gumtree.com.au" in listing_url)
         if phone:
             return phone
-        
-        # Step 2: Check for "Show phone" or "Reveal phone" buttons
-        reveal_button = self._find_reveal_phone_button(soup)
-        if reveal_button:
-            # Phone might be in data attributes
-            phone = self._extract_phone_from_data_attributes(reveal_button)
+
+        # 2) If we already have browser_data from the initial scrape, inspect XHR calls
+        if scrape_result:
+            phone = self._extract_from_browser_data(scrape_result.get("browser_data") or {}, prefer_au="gumtree.com.au" in listing_url)
             if phone:
                 return phone
-            
-            # Phone might require API call
-            api_endpoint = self._find_phone_api_endpoint(soup, url, job_id)
-            if api_endpoint:
-                phone = self._fetch_phone_from_api(api_endpoint, url, job_id)
-                if phone:
-                    return phone
-        
-        # Step 3: Check JavaScript for phone reveal endpoints
-        api_endpoint = self._extract_phone_endpoint_from_js(soup, url, job_id)
-        if api_endpoint:
-            phone = self._fetch_phone_from_api(api_endpoint, url, job_id)
+
+        # 3) Rendered HTML + XHR capture (no click)
+        rendered = self.client.scrape(
+            listing_url,
+            render_js=True,
+            debug=False,
+            rendering_wait=3500,
+            wait_for_selector="body",
+            headers={"Referer": listing_url},
+        )
+        if rendered.get("success"):
+            soup2 = BeautifulSoup(rendered.get("html", ""), "lxml")
+            phone = self._extract_from_html(soup2, prefer_au="gumtree.com.au" in listing_url)
             if phone:
                 return phone
-        
-        # Step 4: Always try API endpoint construction (even without reveal button)
-        # Some listings might have phone behind API without visible button
-        if job_id:
-            api_endpoint = self._find_phone_api_endpoint(soup, url, job_id)
-            if api_endpoint:
-                phone = self._fetch_phone_from_api(api_endpoint, url, job_id)
-                if phone:
-                    return phone
-        
-        return None
-    
-    def _extract_phone_from_html(self, soup: BeautifulSoup, job_id: str = None) -> Optional[str]:
-        """Extract phone number directly from HTML (if visible after login)"""
-        # First check for tel: links (most reliable)
-        tel_link = soup.find("a", href=re.compile(r"tel:"))
-        if tel_link:
-            phone_href = tel_link.get("href", "")
-            phone_match = re.search(r"tel:([^\s]+)", phone_href)
-            if phone_match:
-                phone = phone_match.group(1).replace("tel:", "").replace("%20", "").replace("-", "")
-                # Validate it's a real phone number
-                if self._is_valid_phone(phone, job_id):
-                    return phone
-        
-        # Check for data-phone attributes
-        phone_elem = soup.find(attrs={"data-phone": True})
-        if phone_elem:
-            phone = phone_elem.get("data-phone", "").strip()
-            if self._is_valid_phone(phone, job_id):
-                return phone
-        
-        # Check text content for phone patterns (only if we're authenticated)
-        text = soup.get_text()
-        phone_patterns = [
-            r'(\+?61\s?[2-9]\d{1}\s?\d{4}\s?\d{4})',  # Landline with country code
-            r'(\+?61\s?4\d{2}\s?\d{3}\s?\d{3})',  # Mobile with country code
-            r'(0[2-9]\d{1}\s?\d{4}\s?\d{4})',  # Landline
-            r'(04\d{2}\s?\d{3}\s?\d{3})',  # Mobile
-            r'\(0\d{2}\)\s?\d{4}\s?\d{4}',  # Formatted with area code
-        ]
-        
-        for pattern in phone_patterns:
-            matches = re.findall(pattern, text)
-            for match in matches:
-                phone_candidate = match if isinstance(match, str) else ''.join(match)
-                phone_candidate = phone_candidate.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-                if self._is_valid_phone(phone_candidate, job_id):
-                    return match.strip()
-        
-        return None
-    
-    def _find_reveal_phone_button(self, soup: BeautifulSoup):
-        """Find button or link that reveals phone number"""
-        # Look for buttons/links with text like "Show phone", "Show number", "Reveal phone", etc.
-        reveal_texts = [
-            r'show.*phone',
-            r'show.*number',  # Added: "Show number" (common on Gumtree)
-            r'reveal.*phone',
-            r'reveal.*number',
-            r'view.*phone',
-            r'contact.*phone',
-            r'phone.*number',
-            r'display.*phone',
-        ]
-        
-        for pattern in reveal_texts:
-            # Check by text content (more flexible)
-            elements = soup.find_all(
-                ["button", "a", "span", "div"],
-                string=re.compile(pattern, re.I)
-            )
-            if elements:
-                return elements[0]
-            
-            # Check by text content in child elements
-            elements = soup.find_all(
-                ["button", "a", "span", "div"],
-                string=lambda text: text and re.search(pattern, text, re.I)
-            )
-            if elements:
-                return elements[0]
-            
-            # Also check by class/id
-            elements = soup.find_all(
-                ["button", "a"],
-                class_=re.compile(pattern, re.I)
-            )
-            if elements:
-                return elements[0]
-        
-        # Also check for links with phone icon or specific attributes
-        phone_links = soup.find_all("a", href=re.compile(r'phone|contact|reveal|show', re.I))
-        for link in phone_links:
-            link_text = link.get_text(strip=True).lower()
-            if any(word in link_text for word in ['show', 'reveal', 'view', 'phone', 'number']):
-                return link
-        
-        return None
-    
-    def _extract_phone_from_data_attributes(self, element) -> Optional[str]:
-        """Extract phone from data attributes of reveal button"""
-        data_attrs = [
-            "data-phone",
-            "data-contact-phone",
-            "data-phone-number",
-            "data-reveal-phone",
-            "data-number",
-            "data-contact",
-        ]
-        
-        for attr in data_attrs:
-            phone = element.get(attr)
+            phone = self._extract_from_browser_data(rendered.get("browser_data") or {}, prefer_au="gumtree.com.au" in listing_url)
             if phone:
-                return phone.strip()
-        
-        # Also check parent elements
-        parent = element.parent if hasattr(element, 'parent') else None
-        if parent:
-            for attr in data_attrs:
-                phone = parent.get(attr)
-                if phone:
-                    return phone.strip()
-        
+                return phone
+
+        # 4) Try a JS scenario to click a "show/call/phone" button, then re-check
+        clicked = self._scrape_with_reveal_click(listing_url)
+        if clicked.get("success"):
+            soup3 = BeautifulSoup(clicked.get("html", ""), "lxml")
+            phone = self._extract_from_html(soup3, prefer_au="gumtree.com.au" in listing_url)
+            if phone:
+                return phone
+            phone = self._extract_from_browser_data(clicked.get("browser_data") or {}, prefer_au="gumtree.com.au" in listing_url)
+            if phone:
+                return phone
+
         return None
-    
-    def _find_phone_api_endpoint(self, soup: BeautifulSoup, url: str, job_id: str) -> Optional[str]:
-        """Find API endpoint for fetching phone number"""
-        # Common patterns for phone reveal endpoints
-        base_url = "https://www.gumtree.com.au" if "gumtree.com.au" in url else "https://www.gumtree.com"
-        
-        # First, check if reveal button has href or data attributes with endpoint
-        reveal_button = self._find_reveal_phone_button(soup)
-        if reveal_button:
-            # Check href attribute
-            href = reveal_button.get("href", "") if hasattr(reveal_button, 'get') else ""
-            if href and ("api" in href.lower() or "phone" in href.lower() or "contact" in href.lower()):
-                if href.startswith("http"):
-                    return href
-                elif href.startswith("/"):
-                    return base_url + href
-                else:
-                    return base_url + "/" + href
-            
-            # Check onclick or data attributes for endpoint
-            onclick = reveal_button.get("onclick", "") if hasattr(reveal_button, 'get') else ""
-            if onclick:
-                # Extract URL from onclick
-                url_match = re.search(r'["\']([^"\']*(?:api|phone|contact)[^"\']*)["\']', onclick, re.I)
-                if url_match:
-                    endpoint = url_match.group(1)
-                    if endpoint.startswith("http"):
-                        return endpoint
-                    elif endpoint.startswith("/"):
-                        return base_url + endpoint
-                    else:
-                        return base_url + "/" + endpoint
-            
-            # Check data attributes
-            for attr in ["data-url", "data-endpoint", "data-api", "data-href"]:
-                endpoint = reveal_button.get(attr, "") if hasattr(reveal_button, 'get') else ""
-                if endpoint:
-                    if endpoint.startswith("http"):
-                        return endpoint
-                    elif endpoint.startswith("/"):
-                        return base_url + endpoint
-                    else:
-                        return base_url + "/" + endpoint
-        
-        # Try to construct endpoint from URL structure
-        if job_id:
-            # Try multiple endpoint patterns for Australian Gumtree
-            if "/s-ad/" in url:
-                endpoints = [
-                    f"{base_url}/api/ads/{job_id}/phone",
-                    f"{base_url}/api/v1/ads/{job_id}/phone",
-                    f"{base_url}/api/contact/{job_id}/phone",
-                    f"{base_url}/api/ads/{job_id}/contact",
-                    f"{base_url}/s-ad/api/phone/{job_id}",
-                    f"{base_url}/api/phone/{job_id}",
-                ]
-                # Return first pattern (we'll try all in _fetch_phone_from_api if needed)
-                return endpoints[0]
-            
-            # UK Gumtree pattern
-            if "/p/" in url:
-                endpoints = [
-                    f"{base_url}/api/ads/{job_id}/phone",
-                    f"{base_url}/api/v1/ads/{job_id}/phone",
-                    f"{base_url}/api/contact/{job_id}/phone",
-                ]
-                return endpoints[0]
-        
+
+    # -----------------------------
+    # Internals
+    # -----------------------------
+    def _extract_from_html(self, soup: BeautifulSoup, prefer_au: bool) -> Optional[str]:
+        """Extract phone from tel: links or visible text."""
+
+        # tel: links are best
+        tel_link = soup.find("a", href=re.compile(r"^tel:", re.I))
+        if tel_link and tel_link.get("href"):
+            return self._normalize_phone(tel_link["href"].replace("tel:", ""), prefer_au=prefer_au)
+
+        # Sometimes embedded in JSON/script tags as "phone"/"telephone" etc.
+        # We do a lightweight regex scan on the whole HTML text.
+        html_text = soup.get_text(" ", strip=True)
+
+        # Prefer AU-specific patterns when scraping AU domain
+        if prefer_au:
+            m = self.AU_PHONE_RE.search(html_text)
+            if m:
+                return self._normalize_phone(m.group(0), prefer_au=True)
+
+        m2 = self.PHONE_RE.search(html_text)
+        if m2:
+            return self._normalize_phone(m2.group(0), prefer_au=prefer_au)
+
         return None
-    
-    def _extract_phone_endpoint_from_js(self, soup: BeautifulSoup, url: str, job_id: str) -> Optional[str]:
-        """Extract phone API endpoint from JavaScript code"""
-        script_tags = soup.find_all("script")
-        base_url = "https://www.gumtree.com.au" if "gumtree.com.au" in url else "https://www.gumtree.com"
-        
-        endpoint_patterns = [
-            r'["\']([^"\']*api[^"\']*phone[^"\']*)["\']',
-            r'["\']([^"\']*api[^"\']*number[^"\']*)["\']',  # Added: "api*number"
-            r'["\']([^"\']*contact[^"\']*api[^"\']*)["\']',
-            r'["\']([^"\']*reveal[^"\']*phone[^"\']*)["\']',
-            r'["\']([^"\']*reveal[^"\']*number[^"\']*)["\']',  # Added: "reveal*number"
-            r'["\']([^"\']*show[^"\']*number[^"\']*)["\']',  # Added: "show*number"
-            r'["\']([^"\']*ads[^"\']*phone[^"\']*)["\']',
-            r'["\']([^"\']*ads[^"\']*contact[^"\']*)["\']',  # Added: "ads*contact"
-            r'url:\s*["\']([^"\']*phone[^"\']*)["\']',
-            r'url:\s*["\']([^"\']*number[^"\']*)["\']',  # Added: url with "number"
-            r'endpoint:\s*["\']([^"\']*phone[^"\']*)["\']',  # Added: endpoint with "phone"
-            r'endpoint:\s*["\']([^"\']*contact[^"\']*)["\']',  # Added: endpoint with "contact"
+
+    def _extract_from_browser_data(self, browser_data: Dict[str, Any], prefer_au: bool) -> Optional[str]:
+        """Search Scrapfly browser_data for phone numbers.
+
+        With render_js enabled, Scrapfly can capture XHR calls under
+        result.browser_data.xhr_call. Gumtree's "reveal" often happens via XHR.
+        """
+        if not browser_data:
+            return None
+
+        xhr_calls: List[Dict[str, Any]] = []
+        # key name in docs: xhr_call (singular), but be defensive.
+        if isinstance(browser_data.get("xhr_call"), list):
+            xhr_calls = browser_data["xhr_call"]
+        elif isinstance(browser_data.get("xhr_calls"), list):
+            xhr_calls = browser_data["xhr_calls"]
+
+        for call in xhr_calls:
+            # Try response body first
+            resp = call.get("response") or {}
+            body = resp.get("body") or call.get("body") or ""
+            if isinstance(body, (dict, list)):
+                body_str = str(body)
+            else:
+                body_str = str(body)
+
+            phone = self._extract_phone_from_text(body_str, prefer_au=prefer_au)
+            if phone:
+                return phone
+
+            # Also inspect request URL (sometimes phone is embedded, rare)
+            req = call.get("request") or {}
+            url = req.get("url") or call.get("url") or ""
+            phone = self._extract_phone_from_text(str(url), prefer_au=prefer_au)
+            if phone:
+                return phone
+
+        # js_scenario execute steps can return values (we might return phone directly)
+        js_info = browser_data.get("js_scenario") or {}
+        steps = js_info.get("steps") if isinstance(js_info, dict) else None
+        if isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                if step.get("action") != "execute":
+                    continue
+                result = step.get("result")
+                if result:
+                    phone = self._extract_phone_from_text(str(result), prefer_au=prefer_au)
+                    if phone:
+                        return phone
+
+        return None
+
+    def _scrape_with_reveal_click(self, listing_url: str) -> Dict[str, Any]:
+        """Run a tiny JS scenario that clicks a likely reveal button.
+
+        We intentionally don't hardcode Gumtree selectors; instead we run JS that
+        searches for any element with text containing common reveal phrases.
+        """
+
+        js = r"""
+            const phrases = [
+              'show number','show phone','show phone number','phone number',
+              'call','reveal','show','contact'
+            ];
+
+            function clickFirstMatching() {
+              const candidates = Array.from(document.querySelectorAll('button,a'));
+              for (const el of candidates) {
+                const t = (el.innerText || '').trim().toLowerCase();
+                if (!t) continue;
+                if (phrases.some(p => t.includes(p))) {
+                  el.click();
+                  return t;
+                }
+              }
+              return null;
+            }
+
+            const clicked = clickFirstMatching();
+            // Return something useful for debugging
+            return {clicked_text: clicked, tel: (document.querySelector('a[href^="tel:"]')||{}).href || null};
+        """.strip()
+
+        scenario = [
+            {"wait_for_selector": {"selector": "body", "timeout": 8000}},
+            {"scroll": {"selector": "bottom"}},
+            {"execute": {"script": js, "timeout": 3000}},
+            {"wait": 2500},
         ]
-        
-        for script in script_tags:
-            script_text = script.get_text()
-            for pattern in endpoint_patterns:
-                matches = re.findall(pattern, script_text, re.I)
-                for match in matches:
-                    # Make absolute URL if relative
-                    if match.startswith("/"):
-                        return base_url + match
-                    elif match.startswith("http"):
-                        return match
-                    elif "api" in match.lower():
-                        return base_url + "/" + match
-        
+
+        return self.client.scrape(
+            listing_url,
+            render_js=True,
+            js_scenario=scenario,
+            rendering_wait=2500,
+            wait_for_selector="body",
+            headers={"Referer": listing_url},
+            debug=False,
+        )
+
+    def _extract_phone_from_text(self, text: str, prefer_au: bool) -> Optional[str]:
+        if not text:
+            return None
+
+        if prefer_au:
+            m = self.AU_PHONE_RE.search(text)
+            if m:
+                return self._normalize_phone(m.group(0), prefer_au=True)
+
+        m2 = self.PHONE_RE.search(text)
+        if m2:
+            return self._normalize_phone(m2.group(0), prefer_au=prefer_au)
         return None
-    
-    def _fetch_phone_from_api(self, endpoint: str, listing_url: str, job_id: str = None) -> Optional[str]:
-        """Fetch phone number from API endpoint using authenticated session"""
-        # If endpoint is a pattern, try multiple variations
-        base_url = "https://www.gumtree.com.au" if "gumtree.com.au" in listing_url else "https://www.gumtree.com"
-        
-        endpoints_to_try = [endpoint]
-        
-        # If it's a constructed endpoint, try variations
-        if job_id and "/api/ads/" in endpoint:
-            endpoints_to_try = [
-                endpoint,
-                endpoint.replace("/api/ads/", "/api/v1/ads/"),
-                endpoint.replace("/api/ads/", "/api/contact/"),
-                endpoint.replace("/phone", "/contact"),
-                f"{base_url}/api/phone/{job_id}",
-                f"{base_url}/api/contact/{job_id}",
-            ]
-        
-        for api_endpoint in endpoints_to_try:
-            try:
-                # Use Scrapfly to make the API call with same session
-                # Use POST method as Gumtree might require POST for phone reveal
-                result = self.client.scrape(api_endpoint)
-                
-                if result["success"]:
-                    # Try to parse JSON response
-                    try:
-                        data = json.loads(result["html"])
-                        # Common response formats
-                        phone = (
-                            data.get("phone") or
-                            data.get("phoneNumber") or
-                            data.get("contactPhone") or
-                            data.get("number") or
-                            data.get("data", {}).get("phone") or
-                            data.get("data", {}).get("phoneNumber") or
-                            data.get("result", {}).get("phone") or
-                            data.get("result", {}).get("phoneNumber")
-                        )
-                        if phone and self._is_valid_phone(phone, job_id):
-                            return str(phone).strip()
-                    except (json.JSONDecodeError, AttributeError):
-                        # If not JSON, try to extract from HTML/text
-                        soup = BeautifulSoup(result["html"], "lxml")
-                        phone = self._extract_phone_from_html(soup, job_id)
-                        if phone:
-                            return phone
-            except Exception as e:
-                # Try next endpoint if this one fails
-                continue
-        
-        return None
-    
-    def _is_valid_phone(self, phone: str, job_id: str = None) -> bool:
-        """Validate that a phone number is actually a phone, not a job ID or other number"""
-        if not phone:
-            return False
-        
-        # Remove formatting
-        clean_phone = re.sub(r'[^\d+]', '', phone)
-        
-        # Exclude job IDs
-        if job_id and clean_phone == job_id:
-            return False
-        
-        # Australian phone validation
-        # Should be 10 digits (with or without country code)
-        digits_only = re.sub(r'[^\d]', '', clean_phone)
-        
-        # Remove country code if present
-        if digits_only.startswith("61"):
-            digits_only = digits_only[2:]
-        elif digits_only.startswith("+61"):
-            digits_only = digits_only[3:]
-        
-        # Should be 10 digits for Australian numbers
-        if len(digits_only) == 10:
-            # Should start with 0 for local format or 4 for mobile
-            if digits_only.startswith("0") or digits_only.startswith("4"):
-                return True
-        
-        return False
+
+    def _normalize_phone(self, raw: str, prefer_au: bool) -> Optional[str]:
+        """Normalize phone number to a safe display string.
+
+        We keep it simple: strip non-digits except leading +.
+        If AU and number looks like local '0xxxxxxxxx', convert to +61.
+        """
+        if not raw:
+            return None
+        raw = raw.strip()
+
+        # Keep leading + if present
+        lead_plus = raw.startswith("+")
+        digits = re.sub(r"\D+", "", raw)
+
+        if not digits:
+            return None
+
+        if lead_plus:
+            return "+" + digits
+
+        if prefer_au:
+            # AU mobile/landline often start with 0
+            if digits.startswith("0") and len(digits) in (9, 10):
+                return "+61" + digits[1:]
+            if digits.startswith("61"):
+                return "+" + digits
+
+        # Fallback: return digits as-is
+        return digits

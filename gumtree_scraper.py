@@ -340,6 +340,8 @@ class GumtreeScraper:
         Returns:
             Dictionary with detailed listing information
         """
+        # IMPORTANT: keep the Scrapfly session across calls.
+        # Phone reveal often relies on browser/session context.
         result = self.client.scrape_with_headers(
             listing_url,
             headers=self.config["headers"]
@@ -353,12 +355,12 @@ class GumtreeScraper:
             }
         
         soup = BeautifulSoup(result["html"], "lxml")
-        details = self._parse_listing_details(soup, listing_url)
+        details = self._parse_listing_details(soup, listing_url, scrape_result=result)
         details["success"] = True
         
         return details
     
-    def _parse_listing_details(self, soup: BeautifulSoup, url: str) -> Dict:
+    def _parse_listing_details(self, soup: BeautifulSoup, url: str, scrape_result: Optional[Dict] = None) -> Dict:
         """Parse detailed listing information"""
         details = {
             "url": url,
@@ -421,12 +423,12 @@ class GumtreeScraper:
         
         # Extract phone number using PhoneExtractor (handles login wall and API endpoints)
         job_id = details.get("job_id", "")
-        phone = self.phone_extractor.extract_phone(soup, url, job_id)
+        phone = self.phone_extractor.extract_phone(soup, url, job_id, scrape_result=scrape_result)
         details["phone"] = phone
         
         # Log if phone was found or not
         if not phone:
-            print(f"    ⚠ Phone number not found (may require login or API call)")
+            print(f"    ⚠ Phone number not found (no phone on ad OR reveal endpoint blocked)")
         else:
             print(f"    ✓ Phone number extracted: {phone[:10]}...")
         
