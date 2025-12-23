@@ -7,11 +7,10 @@ Scrapfly API Client for Web Scraping
 
 from __future__ import annotations
 
-import json
 import re
 import time
 import uuid
-from typing import Dict, Optional, Any
+from typing import Any, Dict, Optional
 
 import requests
 from retrying import retry
@@ -23,18 +22,27 @@ class ScrapflyClient:
     def __init__(self, api_key: str = None, session_id: str = None):
         self.api_key = api_key or SCRAPFLY_CONFIG["api_key"]
         self.api_url = SCRAPFLY_CONFIG["url"]
+
+        # Always keep a stable session unless caller explicitly sets one.
+        # This helps with cookie continuity and sticky proxy behavior.
         self.session_id = session_id or f"gumtree-{uuid.uuid4().hex}"
+
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
 
     @staticmethod
     def _infer_country(url: str, fallback: str) -> str:
-        if "gumtree.com.au" in url:
+        if "gumtree.com.au" in (url or "").lower():
             return "AU"
         return fallback
 
     @staticmethod
     def _flatten_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+        """
+        Scrapfly supports passing headers via query params:
+          headers[User-Agent]=...
+          headers[Accept-Language]=...
+        """
         out: Dict[str, str] = {}
         if not headers:
             return out
@@ -52,14 +60,30 @@ class ScrapflyClient:
         method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
         body: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
+        """
+        Returns a dict compatible with PhoneExtractor expectations:
+          {
+            "success": bool,
+            "url": ...,
+            "html": ...,
+            "response": <full scrapfly JSON>,
+            "browser_data": ...,
+            ...
+          }
+        """
         method = (method or "GET").upper()
 
         render_js = kwargs.pop("render_js", SCRAPFLY_CONFIG.get("render_js", True))
         premium_proxy = kwargs.pop("premium_proxy", SCRAPFLY_CONFIG.get("premium_proxy", True))
         asp = kwargs.pop("asp", SCRAPFLY_CONFIG.get("asp", True))
+
+        # This is Scrapfly debug param (not your app debug).
+        # When True, Scrapfly often returns richer diagnostic/network structures.
         debug = kwargs.pop("debug", False)
+
+        # Sticky proxy keeps the same exit IP per session (helps stateful flows).
         session_sticky_proxy = kwargs.pop("session_sticky_proxy", True)
 
         country = self._infer_country(url, kwargs.pop("country", SCRAPFLY_CONFIG.get("country", "GB")))
@@ -78,12 +102,13 @@ class ScrapflyClient:
         if debug:
             params["debug"] = "true"
 
-        # pass-through extra Scrapfly params
+        # Pass-through any other Scrapfly params
         for k, v in kwargs.items():
             if v is None:
                 continue
             params[k] = v
 
+        # Forward headers in Scrapfly "headers[...]" form
         params.update(self._flatten_headers(headers))
 
         try:
@@ -110,8 +135,8 @@ class ScrapflyClient:
                 "status_code": result.get("status_code", resp.status_code),
                 "cookies": result.get("cookies", {}) or {},
                 "browser_data": result.get("browser_data", {}) or {},
-                "result_headers": result.get("headers", {}) or {},  # <-- important for debugging
-                "response": data,  # full payload for deep debugging
+                "result_headers": result.get("headers", {}) or {},
+                "response": data,  # full payload (PhoneExtractor mines this)
                 "session_id": self.session_id,
                 "country": country,
             }
