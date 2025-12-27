@@ -46,6 +46,32 @@ class DataHandler:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
     
+    def _clear_output_files(self):
+        """Clear old output files from output directory"""
+        try:
+            if os.path.exists(self.output_dir):
+                # List of default output files to remove
+                files_to_remove = [
+                    self.data_file,
+                    self.csv_file,
+                ]
+                
+                # Also remove any timestamped Excel files
+                for file in os.listdir(self.output_dir):
+                    if file.startswith("gumtree_data_") and file.endswith(".xlsx"):
+                        files_to_remove.append(os.path.join(self.output_dir, file))
+                
+                # Remove files if they exist
+                for file_path in files_to_remove:
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            print(f"Removed old file: {file_path}")
+                        except Exception as e:
+                            print(f"Warning: Could not remove {file_path}: {e}")
+        except Exception as e:
+            print(f"Warning: Error clearing output files: {e}")
+    
     def save_json(self, data: List[Dict], filename: str = None) -> str:
         """
         Save data to JSON file
@@ -384,6 +410,7 @@ class DataHandler:
                 "description",
                 "phone",
                 "phoneNumberExists",
+                "phoneRevealUrl",
                 "scraped_at",
                 "lastEdited",
                 "success"
