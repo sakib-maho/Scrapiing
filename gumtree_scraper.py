@@ -747,6 +747,31 @@ class GumtreeScraper:
             description = re.sub(r'\s*' + re.escape(job_id_for_cleanup) + r'\s*$', '', description)
             description = description.strip()
         
+        # Extract only text between "Description" and stop markers (case insensitive)
+        if description:
+            text = description  # your full string
+            # Try multiple patterns for different variations
+            # Use more flexible patterns that handle newlines and whitespace
+            patterns = [
+                r'Description\s*\n?\s*(.*?)\s*\n?\s*Show\s+full\s+description',  # "Show full description"
+                r'Description\s*\n?\s*(.*?)\s*\n?\s*Show\s+all\s+description',     # "Show all description"
+                r'Description\s*\n?\s*(.*?)\s*\n?\s*ADVERTISEMENT',              # "ADVERTISEMENT" (common stop)
+                r'Description\s*\n?\s*(.*?)\s*\n?\s*Apply\s+with\s+confidence',   # "Apply with confidence"
+                r'Description\s*\n?\s*(.*?)\s*\n?\s*Get\s+in\s+touch',          # "Get in touch"
+            ]
+            
+            result = None
+            for pattern in patterns:
+                match = re.search(pattern, text, re.S | re.I)  # re.S for dotall (matches newlines), re.I for case insensitive
+                if match:
+                    result = match.group(1).strip()
+                    # Additional cleanup: remove any remaining leading/trailing newlines
+                    result = re.sub(r'^\n+|\n+$', '', result)
+                    break
+            
+            if result:
+                description = result
+        
         details["description"] = description
         
         # Check if phone number is in description

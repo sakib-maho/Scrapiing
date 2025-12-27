@@ -8,7 +8,7 @@ from data_handler import DataHandler
 # Hardcoded configuration
 CATEGORY_URL = "s-farming-veterinary/nsw/c21210l3008839"
 MAX_PAGES = 1
-MAX_LISTINGS = 1  # Maximum number of listings to scrape (None = scrape all)
+MAX_LISTINGS = None  # Maximum number of listings to scrape (None = scrape all)
 LOCATION = ""  # Optional location filter
 EXPORT_FORMAT = "all"  # Options: "json", "csv", "excel", "all"
 OUTPUT_FILENAME = None  # None = use default, or specify custom name without extension
