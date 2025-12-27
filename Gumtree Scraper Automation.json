@@ -1,0 +1,219 @@
+{
+  "name": "Gumtree Scraper Automation",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "31a1578d-8c9a-4a81-986d-187ac1d8853d",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -656,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "command": "./n8n_execute_scraper.sh",
+        "options": {
+          "cwd": "/Users/sakib/Salaheddine Mokhtari"
+        }
+      },
+      "id": "fd86957b-98a9-48f9-a141-d57f49dd9027",
+      "name": "Execute Scraper",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-exit-code",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "26b1128d-39d0-476d-a57d-fb044c1ab26e",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "filePath": "/Users/sakib/.n8n-files/gumtree_data.json"
+      },
+      "id": "29d32327-e240-4968-8554-3e42c7ade483",
+      "name": "Read JSON Output",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse JSON and extract metadata\nconst inputData = $input.first();\n\nif (!inputData) {\n  throw new Error('No input data received from Read JSON Output');\n}\n\nlet jsonData;\nif (inputData.json && typeof inputData.json.data === 'string') {\n  jsonData = JSON.parse(inputData.json.data);\n} else if (inputData.binary && Object.keys(inputData.binary).length) {\n  const binaryPropertyName = Object.keys(inputData.binary)[0];\n  const buffer = await helpers.getBinaryDataBuffer(0, binaryPropertyName);\n  const jsonString = buffer.toString('utf8').replace(/^\\uFEFF/, '');\n  jsonData = JSON.parse(jsonString);\n} else {\n  throw new Error('No JSON payload found in input');\n}\n\nconst metadata = jsonData.metadata || {};\nconst listings = Array.isArray(jsonData.data) ? jsonData.data : [];\nconst message = `✅ Scraped ${listings.length} listings successfully at ${metadata.scraped_at || 'N/A'}`;\nconst binaryData = await helpers.prepareBinaryData(Buffer.from(message, 'utf8'));\n\nreturn [\n  {\n    json: {\n      totalItems: metadata.total_items || 0,\n      scrapedAt: metadata.scraped_at || 'N/A',\n      listingsCount: listings.length,\n      success: true,\n      message\n    },\n    binary: {\n      data: binaryData\n    }\n  }\n];"
+      },
+      "id": "a7f45a8f-bc91-4dee-ab1b-f1bc9414904e",
+      "name": "Process Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileName": "={{ '/Users/sakib/.n8n-files/scraper_log_' + $now.toFormat('yyyy-MM-dd_HH-mm-ss') + '.txt' }}",
+        "data": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "cf25ef0a-6fb6-4b8b-b576-8cbfe0cd4cbb",
+      "name": "Log Results",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build error log payload as binary\nconst inputData = $input.first();\n\nif (!inputData) {\n  throw new Error('No input data received from Execute Scraper');\n}\n\nconst exitCode = inputData.json.exitCode ?? 'N/A';\nconst stdout = inputData.json.stdout ?? '';\nconst stderr = inputData.json.stderr ?? '';\nconst message = `Scraper failed with exit code ${exitCode}\\n\\nSTDOUT:\\n${stdout}\\n\\nSTDERR:\\n${stderr}`;\nconst binaryData = await helpers.prepareBinaryData(Buffer.from(message, 'utf8'));\n\nreturn [\n  {\n    json: {\n      message\n    },\n    binary: {\n      data: binaryData\n    }\n  }\n];"
+      },
+      "id": "6a9f8a6e-3e2a-4a5c-9f6e-2d7e5f1b3c4d",
+      "name": "Format Error Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "fileName": "={{ '/Users/sakib/.n8n-files/scraper_error_' + $now.toFormat('yyyy-MM-dd_HH-mm-ss') + '.txt' }}",
+        "data": "=Scraper failed with exit code {{ $json.exitCode }}\n\nSTDOUT:\n{{ $json.stdout }}\n\nSTDERR:\n{{ $json.stderr }}",
+        "options": {}
+      },
+      "id": "13a343f3-cc7e-464b-8b34-fe16f47c5f2f",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Scraper": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Read JSON Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read JSON Output": {
+      "main": [
+        [
+          {
+            "node": "Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Results": {
+      "main": [
+        [
+          {
+            "node": "Log Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Log": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "783f2174-0a01-493b-9088-36e04b1944fb",
+  "meta": {
+    "instanceId": "4f7a4a85a157c2692aaeae9ce6b42af49284ea90efd53ebb451a5254da8e0dad"
+  },
+  "id": "5dxt3tQ8BmHyyiaG",
+  "tags": []
+}
