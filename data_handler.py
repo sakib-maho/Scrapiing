@@ -5,10 +5,22 @@ import json
 import csv
 import os
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime
 import pandas as pd
 from config import get_config
+
+# Google Sheets API imports
+try:
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+    GOOGLE_SHEETS_AVAILABLE = True
+except ImportError:
+    GOOGLE_SHEETS_AVAILABLE = False
+    print("Warning: Google Sheets API libraries not installed. Install with: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
 
 
 class DataHandler:
@@ -20,6 +32,14 @@ class DataHandler:
         self.data_file = self.config["output"]["data_file"]
         self.csv_file = self.config["output"]["csv_file"]
         self._ensure_output_dir()
+        
+        # Google Sheets configuration
+        self.sheets_config = self.config.get("google_sheets", {})
+        self.sheet_id = self.sheets_config.get("sheet_id")
+        self.sheet_range = self.sheets_config.get("range", "Sheet1!A:Z")
+        self.credentials_file = self.sheets_config.get("credentials_file", "credentials.json")
+        self.token_file = self.sheets_config.get("token_file", "token.json")
+        self.service = None
     
     def _ensure_output_dir(self):
         """Create output directory if it doesn't exist"""
@@ -222,3 +242,246 @@ class DataHandler:
             }
         
         return stats
+    
+    def _get_google_sheets_service(self):
+        """Get authenticated Google Sheets service"""
+        if not GOOGLE_SHEETS_AVAILABLE:
+            raise ImportError("Google Sheets API libraries not installed")
+        
+        if self.service:
+            return self.service
+        
+        SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+        creds = None
+        
+        # Load existing token
+        if os.path.exists(self.token_file):
+            creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
+        
+        # If there are no (valid) credentials available, let the user log in
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                if not os.path.exists(self.credentials_file):
+                    raise FileNotFoundError(
+                        f"Google credentials file not found: {self.credentials_file}\n"
+                        "Please download credentials.json from Google Cloud Console"
+                    )
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_file, SCOPES)
+                creds = flow.run_local_server(port=0)
+            
+            # Save the credentials for the next run
+            with open(self.token_file, 'w') as token:
+                token.write(creds.to_json())
+        
+        self.service = build('sheets', 'v4', credentials=creds)
+        return self.service
+    
+    def _read_existing_sheet_data(self) -> List[Dict]:
+        """Read existing data from Google Sheets"""
+        try:
+            service = self._get_google_sheets_service()
+            
+            # Read existing data
+            result = service.spreadsheets().values().get(
+                spreadsheetId=self.sheet_id,
+                range=self.sheet_range
+            ).execute()
+            
+            values = result.get('values', [])
+            
+            if not values:
+                return []
+            
+            # First row is headers
+            headers = values[0]
+            existing_data = []
+            
+            # Convert rows to dictionaries
+            for row in values[1:]:
+                if row:  # Skip empty rows
+                    item = {}
+                    for i, header in enumerate(headers):
+                        if i < len(row):
+                            item[header] = row[i]
+                        else:
+                            item[header] = ""
+                    existing_data.append(item)
+            
+            return existing_data
+            
+        except HttpError as error:
+            print(f"Error reading from Google Sheets: {error}")
+            return []
+    
+    def save_to_google_sheets(self, data: List[Dict]) -> bool:
+        """
+        Save data to Google Sheets, appending only new records
+        
+        Args:
+            data: List of dictionaries to save
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not GOOGLE_SHEETS_AVAILABLE:
+            print("Error: Google Sheets API libraries not installed")
+            return False
+        
+        if not self.sheet_id:
+            print("Error: Google Sheets ID not configured")
+            return False
+        
+        if not data:
+            print("No data to save to Google Sheets")
+            return False
+        
+        try:
+            service = self._get_google_sheets_service()
+            
+            # Read existing data to check for duplicates
+            existing_data = self._read_existing_sheet_data()
+            
+            # Create set of existing job_ids and URLs for duplicate detection
+            existing_job_ids = {item.get("job_id") for item in existing_data if item.get("job_id")}
+            existing_urls = {item.get("url") for item in existing_data if item.get("url")}
+            
+            # Filter out duplicates
+            new_data = []
+            for item in data:
+                job_id = item.get("job_id")
+                url = item.get("url")
+                
+                # Skip if job_id or URL already exists
+                if job_id and job_id in existing_job_ids:
+                    continue
+                if url and url in existing_urls:
+                    continue
+                
+                new_data.append(item)
+                # Add to existing sets to avoid duplicates within new_data
+                if job_id:
+                    existing_job_ids.add(job_id)
+                if url:
+                    existing_urls.add(url)
+            
+            if not new_data:
+                print("No new data to append to Google Sheets (all records already exist)")
+                return True
+            
+            print(f"Appending {len(new_data)} new records to Google Sheets (skipped {len(data) - len(new_data)} duplicates)")
+            
+            # Define column order to match JSON format
+            preferred_order = [
+                "job_id",
+                "title",
+                "url",
+                "location",
+                "categoryName",
+                "creationDate",
+                "description",
+                "phone",
+                "phoneNumberExists",
+                "scraped_at",
+                "lastEdited",
+                "success"
+            ]
+            
+            # Flatten data for Google Sheets
+            flattened_data = []
+            for item in new_data:
+                flattened_item = self._flatten_dict(item)
+                flattened_data.append(flattened_item)
+            
+            # Get all unique keys from all items
+            all_keys = set()
+            for item in flattened_data:
+                all_keys.update(item.keys())
+            
+            # Use preferred order, then add any additional keys alphabetically
+            headers = []
+            for key in preferred_order:
+                if key in all_keys:
+                    headers.append(key)
+            
+            # Add any remaining keys that weren't in preferred order
+            remaining_keys = sorted(all_keys - set(preferred_order))
+            headers.extend(remaining_keys)
+            
+            # Check if sheet is empty (first run)
+            result = service.spreadsheets().values().get(
+                spreadsheetId=self.sheet_id,
+                range="Sheet1!A1:Z1"
+            ).execute()
+            
+            values = result.get('values', [])
+            
+            # Prepare data rows
+            rows = []
+            if not values:
+                # First run - add headers
+                rows.append(headers)
+            
+            # Add data rows
+            for item in flattened_data:
+                row = []
+                for header in headers:
+                    value = item.get(header, "")
+                    # Convert None/null to empty string, keep other values as strings
+                    if value is None:
+                        row.append("")
+                    else:
+                        row.append(str(value))
+                rows.append(row)
+            
+            # Determine range for append
+            if not values:
+                # First run - write headers and data
+                range_name = f"Sheet1!A1"
+            else:
+                # Append mode - find next empty row
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=self.sheet_id,
+                    range="Sheet1!A:A"
+                ).execute()
+                existing_rows = result.get('values', [])
+                next_row = len(existing_rows) + 1
+                range_name = f"Sheet1!A{next_row}"
+            
+            # Write data to sheet
+            body = {
+                'values': rows
+            }
+            
+            if not values:
+                # First run - use update
+                service.spreadsheets().values().update(
+                    spreadsheetId=self.sheet_id,
+                    range=range_name,
+                    valueInputOption='USER_ENTERED',
+                    body=body
+                ).execute()
+            else:
+                # Append mode
+                service.spreadsheets().values().append(
+                    spreadsheetId=self.sheet_id,
+                    range=range_name,
+                    valueInputOption='USER_ENTERED',
+                    insertDataOption='INSERT_ROWS',
+                    body=body
+                ).execute()
+            
+            print(f"Successfully appended {len(new_data)} records to Google Sheets")
+            print(f"Sheet URL: https://docs.google.com/spreadsheets/d/{self.sheet_id}/edit")
+            return True
+            
+        except HttpError as error:
+            print(f"Error writing to Google Sheets: {error}")
+            return False
+        except Exception as e:
+            print(f"Unexpected error saving to Google Sheets: {e}")
+            import traceback
+            traceback.print_exc()
+            return False

@@ -1022,8 +1022,8 @@ class GumtreeScraper:
             if date_elem:
                 creation_date = date_elem.get("datetime", "")
                 # If datetime is ISO format, extract just the date part
-                if creation_date and "T" in creation_date:
-                    creation_date = creation_date.split("T")[0]
+            if creation_date and "T" in creation_date:
+                creation_date = creation_date.split("T")[0]
         
         # Look for date elements by class (more specific selectors)
         if not creation_date:

@@ -8,7 +8,7 @@ from data_handler import DataHandler
 # Hardcoded configuration
 CATEGORY_URL = "s-farming-veterinary/nsw/c21210l3008839"
 MAX_PAGES = 1
-MAX_LISTINGS = None  # Maximum number of listings to scrape (None = scrape all)
+MAX_LISTINGS = 1  # Maximum number of listings to scrape (None = scrape all)
 LOCATION = ""  # Optional location filter
 EXPORT_FORMAT = "all"  # Options: "json", "csv", "excel", "all"
 OUTPUT_FILENAME = None  # None = use default, or specify custom name without extension
@@ -39,27 +39,15 @@ def main():
         
         print(f"\nFound {len(listings)} listings")
         
-        # Save data
+        # Save data to Google Sheets
         if listings:
-            # Determine output filenames
-            if OUTPUT_FILENAME:
-                json_file = f"output/{OUTPUT_FILENAME}.json"
-                csv_file = f"output/{OUTPUT_FILENAME}.csv"
-                excel_file = f"output/{OUTPUT_FILENAME}.xlsx"
-            else:
-                json_file = None
-                csv_file = None
-                excel_file = None
+            # Save to Google Sheets (appends only new data)
+            success = data_handler.save_to_google_sheets(listings)
+            if not success:
+                print("Warning: Failed to save to Google Sheets. Saving to local files as backup...")
             
-            # Export in requested format
-            if EXPORT_FORMAT in ["json", "all"]:
-                data_handler.save_json(listings, json_file)
-            
-            if EXPORT_FORMAT in ["csv", "all"]:
-                data_handler.save_csv(listings, csv_file)
-            
-            if EXPORT_FORMAT in ["excel", "all"]:
-                data_handler.export_to_excel(listings, excel_file)
+            # Always save JSON locally for n8n workflow compatibility
+            data_handler.save_json(listings)
             
             # Print statistics
             stats = data_handler.get_statistics(listings)

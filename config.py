@@ -31,6 +31,12 @@ OUTPUT_DIR = "output"
 DATA_FILE = f"{OUTPUT_DIR}/gumtree_data.json"
 CSV_FILE = f"{OUTPUT_DIR}/gumtree_data.csv"
 
+# Google Sheets Configuration
+GOOGLE_SHEETS_ID = "1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA"
+GOOGLE_SHEETS_RANGE = "Sheet1!A:Z"  # Adjust range as needed
+GOOGLE_CREDENTIALS_FILE = "credentials.json"  # Path to OAuth2 credentials file
+GOOGLE_TOKEN_FILE = "token.json"  # Path to store access token
+
 # Scraping Settings
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds
@@ -61,6 +67,12 @@ def get_config() -> Dict:
             "dir": OUTPUT_DIR,
             "data_file": DATA_FILE,
             "csv_file": CSV_FILE,
+        },
+        "google_sheets": {
+            "sheet_id": GOOGLE_SHEETS_ID,
+            "range": GOOGLE_SHEETS_RANGE,
+            "credentials_file": GOOGLE_CREDENTIALS_FILE,
+            "token_file": GOOGLE_TOKEN_FILE,
         },
         "scraping": {
             "max_retries": MAX_RETRIES,
