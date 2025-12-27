@@ -50,36 +50,69 @@ This guide will help you set up Google Sheets API credentials to enable saving s
 
 1. Run the scraper: `python3 main.py`
 2. On first run, a browser window will open asking you to authorize the application
-3. Sign in with the Google account that has access to the sheet
+3. Sign in with the Google account that has access to the sheet (`robi99ssr@gmail.com`)
 4. Click **Allow** to grant permissions
-5. A `token.json` file will be created automatically (this stores your access token)
+5. A `token.json` file will be created automatically in the project root (this stores your access token)
+6. The browser window will close automatically after successful authentication
 
 ## Step 6: Verify Setup
 
-1. Run the scraper again
+1. Run the scraper again: `python3 main.py`
 2. Check your Google Sheet - new data should appear
-3. The scraper will only append new records (duplicates based on `job_id` or `url` are skipped)
+3. The scraper will:
+   - Print how many new records were appended
+   - Print the Google Sheet URL
+   - Save local JSON/CSV/Excel files as backup
+4. The scraper will only append new records (duplicates based on `job_id` or `url` are skipped)
+5. On first run, column headers will be automatically created
 
 ## Troubleshooting
 
-### "credentials.json not found"
-- Make sure `credentials.json` is in the project root directory
+### "credentials.json not found" or "Google credentials file not found"
+- Make sure `credentials.json` is in the project root directory (same folder as `main.py`)
 - Check the file name is exactly `credentials.json` (case-sensitive)
+- Verify the file was downloaded from Google Cloud Console and not renamed incorrectly
 
-### "Access denied" or "Permission denied"
-- Make sure you've shared the Google Sheet with the email associated with your Google Cloud project
-- Verify the email has Editor permissions
+### "Access denied" or "Permission denied" or "Error 403: access_denied"
+- Make sure you've shared the Google Sheet with the email associated with your Google Cloud project (`robi99ssr@gmail.com`)
+- Verify the email has **Editor** permissions (not just Viewer)
+- If the app is in testing mode, make sure your email is added as a test user in Google Cloud Console:
+  - Go to **APIs & Services** > **OAuth consent screen**
+  - Scroll to **Test users** section
+  - Click **Add Users** and add `robi99ssr@gmail.com`
+- Delete `token.json` and re-authenticate
 
-### "Token expired"
-- Delete `token.json` and run the scraper again to re-authenticate
+### "Token expired" or "Invalid credentials"
+- Delete `token.json` from the project root directory
+- Run the scraper again to re-authenticate
+- A new browser window will open for authentication
 
 ### "Module not found" errors
 - Install required packages: `pip install -r requirements.txt`
+- Make sure you're in the virtual environment: `source venv/bin/activate`
+
+### "Google Sheets ID not configured"
+- Check `config.py` - `GOOGLE_SHEETS_ID` should be set to `1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA`
+
+### Google Sheets save fails but local files are saved
+- This is expected behavior - the scraper always saves local files as backup
+- Check the error message in the console for specific Google Sheets API errors
+- Verify your Google Cloud project has Google Sheets API enabled
+- Check your Scrapfly API quota (if applicable)
 
 ## Notes
 
-- The `token.json` file contains your access token - keep it secure
-- The scraper automatically detects duplicates using `job_id` and `url` fields
-- Only new records are appended to the sheet
-- If Google Sheets save fails, the scraper will fall back to saving local JSON/CSV files
+- **Security**: Both `credentials.json` and `token.json` contain sensitive information
+  - These files are automatically ignored by git (via `.gitignore`)
+  - **Never commit these files to version control**
+  - Keep them secure and don't share them publicly
+- **Duplicate Detection**: The scraper automatically detects duplicates using `job_id` and `url` fields
+- **Data Appending**: Only new records are appended to the sheet (existing records are skipped)
+- **Backup Files**: Local JSON/CSV/Excel files are **always saved** as backup, even when Google Sheets save succeeds
+- **Column Order**: 13 columns are saved in a specific order (see `GOOGLE_SHEETS_INFO.md` for details)
+- **First Run**: On the first run, column headers are automatically created in the Google Sheet
+- **Error Handling**: If Google Sheets save fails, the scraper will:
+  - Print a warning message
+  - Continue to save local files
+  - Return success status for the scraping operation (only Google Sheets save fails)
 
