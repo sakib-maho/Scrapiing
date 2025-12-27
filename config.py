@@ -17,14 +17,13 @@ SCRAPFLY_CONFIG = {
     "api_key": SCRAPFLY_API_KEY,
     "url": SCRAPFLY_API_URL,
     "render_js": True,  # Enable JavaScript rendering
-    "country": "GB",  # UK for Gumtree
+    "country": "AU",  # Australia for Gumtree
     "premium_proxy": True,  # Use premium proxies
     "asp": True,  # Anti-scraping protection
 }
 
-# Gumtree Base URLs (supports both UK and Australian sites)
-GUMTREE_BASE_URL = "https://www.gumtree.com"  # Default UK
-GUMTREE_AU_BASE_URL = "https://www.gumtree.com.au"  # Australian site
+# Gumtree Base URLs (Australian site only)
+GUMTREE_BASE_URL = "https://www.gumtree.com.au"  # Australian site
 GUMTREE_LOGIN_URL = f"{GUMTREE_BASE_URL}/login.html"
 
 # Output Configuration
@@ -42,7 +41,7 @@ DELAY_BETWEEN_REQUESTS = 1  # seconds
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-GB,en;q=0.9",
+    "Accept-Language": "en-AU,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",

@@ -17,9 +17,9 @@ class ScrapflyClient:
         self.api_url = SCRAPFLY_CONFIG["url"]
         self.session_id = session_id  # Scrapfly session ID for maintaining cookies
         self.session = requests.Session()
+        # Scrapfly API key can be in header or query parameter
         self.session.headers.update({
             "X-API-KEY": self.api_key,
-            "Content-Type": "application/json",
         })
     
     @retry(stop_max_attempt_number=3, wait_fixed=2000)
@@ -41,7 +41,7 @@ class ScrapflyClient:
         payload = {
             "url": url,
             "render_js": kwargs.get("render_js", SCRAPFLY_CONFIG.get("render_js", True)),
-            "country": kwargs.get("country", SCRAPFLY_CONFIG.get("country", "GB")),
+            "country": kwargs.get("country", SCRAPFLY_CONFIG.get("country", "AU")),
             "premium_proxy": kwargs.get("premium_proxy", SCRAPFLY_CONFIG.get("premium_proxy", True)),
             "asp": kwargs.get("asp", SCRAPFLY_CONFIG.get("asp", True)),
         }
@@ -61,24 +61,27 @@ class ScrapflyClient:
             country = payload["country"]
             if "gumtree.com.au" in url:
                 country = "AU"
-            
             # Build query parameters
             query_params = {
+                "key": self.api_key,  # API key in query string
                 "url": url,
-                "render_js": str(payload["render_js"]).lower(),
+                "render_js": "true" if payload["render_js"] else "false",
                 "country": country,
-                "premium_proxy": str(payload["premium_proxy"]).lower(),
-                "asp": str(payload["asp"]).lower(),
+                "premium_proxy": "true" if payload["premium_proxy"] else "false",
+                "asp": "true" if payload["asp"] else "false",
             }
             
-            # Add session ID if available (for maintaining authentication)
             if self.session_id:
                 query_params["session"] = self.session_id
             
-            # Add headers as a JSON string if provided
+            # Scrapfly expects headers as individual query parameters: headers[Header-Name]=value
+            # Example: headers[User-Agent]=Mozilla/5.0...
             if custom_headers:
-                query_params["headers"] = json.dumps(custom_headers)
+                for header_name, header_value in custom_headers.items():
+                    # Use bracket notation for nested parameters
+                    query_params[f"headers[{header_name}]"] = str(header_value)
             
+            # Use GET request with query parameters
             response = self.session.get(
                 self.api_url,
                 params=query_params,
@@ -107,6 +110,15 @@ class ScrapflyClient:
             }
             
         except requests.exceptions.HTTPError as e:
+            # Get detailed error message
+            error_detail = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.text
+                    error_detail = f"{str(e)} - Response: {error_body[:500]}"
+                except:
+                    pass
+            
             # Handle rate limiting (429 errors)
             if e.response.status_code == 429:
                 retry_after = e.response.headers.get("Retry-After")
@@ -130,9 +142,9 @@ class ScrapflyClient:
             return {
                 "success": False,
                 "url": url,
-                "error": str(e),
+                "error": error_detail,
                 "html": "",
-                "status_code": e.response.status_code if hasattr(e, 'response') else 0,
+                "status_code": e.response.status_code if hasattr(e, 'response') and e.response else 0,
             }
         except requests.exceptions.RequestException as e:
             return {
@@ -149,14 +161,15 @@ class ScrapflyClient:
         
         Args:
             url: URL to scrape
-            headers: Custom headers to use (Note: Scrapfly handles headers automatically)
+            headers: Custom headers to use
             **kwargs: Additional Scrapfly parameters
         
         Returns:
             Dictionary containing response data
         """
-        # Scrapfly automatically handles headers, so we can just call scrape
-        # Custom headers are optional as Scrapfly uses its own headers
+        # Pass headers to scrape method
+        if headers:
+            kwargs["headers"] = headers
         return self.scrape(url, **kwargs)
     
     def get_cookies(self, url: str) -> Dict[str, str]:

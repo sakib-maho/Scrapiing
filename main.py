@@ -1,137 +1,64 @@
 """
 Main execution script for Gumtree Scraping Automation
 """
-import argparse
 import sys
 from gumtree_scraper import GumtreeScraper
 from data_handler import DataHandler
 
+# Hardcoded configuration
+CATEGORY_URL = "s-farming-veterinary/nsw/c21210l3008839"
+MAX_PAGES = 1
+MAX_LISTINGS = 1  # Maximum number of listings to scrape (None = scrape all)
+LOCATION = ""  # Optional location filter
+EXPORT_FORMAT = "all"  # Options: "json", "csv", "excel", "all"
+OUTPUT_FILENAME = None  # None = use default, or specify custom name without extension
+
 
 def main():
     """Main execution function"""
-    parser = argparse.ArgumentParser(
-        description="Gumtree Scraping Automation using Scrapfly API"
-    )
-    parser.add_argument(
-        "--search",
-        type=str,
-        help="Search query for listings"
-    )
-    parser.add_argument(
-        "--location",
-        type=str,
-        default="",
-        help="Location filter (optional)"
-    )
-    parser.add_argument(
-        "--category",
-        type=str,
-        help="Category to scrape (category name or URL path)"
-    )
-    parser.add_argument(
-        "--url",
-        type=str,
-        help="Specific listing URL to scrape details"
-    )
-    parser.add_argument(
-        "--pages",
-        type=int,
-        default=5,
-        help="Maximum number of pages to scrape (default: 5)"
-    )
-    parser.add_argument(
-        "--login",
-        action="store_true",
-        help="Attempt to login to Gumtree account"
-    )
-    parser.add_argument(
-        "--export-format",
-        type=str,
-        choices=["json", "csv", "excel", "all"],
-        default="all",
-        help="Export format (default: all)"
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        help="Custom output filename (without extension)"
-    )
-    
-    args = parser.parse_args()
-    
     # Initialize scraper and data handler
     scraper = GumtreeScraper()
     data_handler = DataHandler()
     
     try:
-        # Login if requested
-        if args.login:
-            print("Attempting to login to Gumtree...")
-            if scraper.login():
-                print("Login successful!")
-            else:
-                print("Login failed. Continuing without login...")
+        print(f"\nScraping category: {CATEGORY_URL}")
+        print(f"Max pages: {MAX_PAGES}")
+        if MAX_LISTINGS:
+            print(f"Max listings: {MAX_LISTINGS}")
+        if LOCATION:
+            print(f"Location filter: {LOCATION}")
+        print()
         
-        listings = []
+        # Scrape category with hardcoded settings
+        listings = scraper.scrape_category(
+            category=CATEGORY_URL,
+            location=LOCATION,
+            max_pages=MAX_PAGES,
+            max_listings=MAX_LISTINGS
+        )
         
-        # Search listings
-        if args.search:
-            print(f"\nSearching for: '{args.search}'")
-            if args.location:
-                print(f"Location: {args.location}")
-            listings = scraper.search_listings(
-                query=args.search,
-                location=args.location,
-                max_pages=args.pages
-            )
-            print(f"Found {len(listings)} listings")
-        
-        # Scrape category
-        elif args.category:
-            print(f"\nScraping category: {args.category}")
-            listings = scraper.scrape_category(
-                category=args.category,
-                location=args.location,
-                max_pages=args.pages
-            )
-            print(f"Found {len(listings)} listings")
-        
-        # Get specific listing details
-        elif args.url:
-            print(f"\nScraping listing: {args.url}")
-            details = scraper.get_listing_details(args.url)
-            if details.get("success"):
-                listings = [details]
-                print("Listing details scraped successfully")
-            else:
-                print(f"Failed to scrape listing: {details.get('error')}")
-                return 1
-        
-        else:
-            print("No action specified. Use --search, --category, or --url")
-            parser.print_help()
-            return 1
+        print(f"\nFound {len(listings)} listings")
         
         # Save data
         if listings:
             # Determine output filenames
-            if args.output:
-                json_file = f"output/{args.output}.json"
-                csv_file = f"output/{args.output}.csv"
-                excel_file = f"output/{args.output}.xlsx"
+            if OUTPUT_FILENAME:
+                json_file = f"output/{OUTPUT_FILENAME}.json"
+                csv_file = f"output/{OUTPUT_FILENAME}.csv"
+                excel_file = f"output/{OUTPUT_FILENAME}.xlsx"
             else:
                 json_file = None
                 csv_file = None
                 excel_file = None
             
             # Export in requested format
-            if args.export_format in ["json", "all"]:
+            if EXPORT_FORMAT in ["json", "all"]:
                 data_handler.save_json(listings, json_file)
             
-            if args.export_format in ["csv", "all"]:
+            if EXPORT_FORMAT in ["csv", "all"]:
                 data_handler.save_csv(listings, csv_file)
             
-            if args.export_format in ["excel", "all"]:
+            if EXPORT_FORMAT in ["excel", "all"]:
                 data_handler.export_to_excel(listings, excel_file)
             
             # Print statistics
