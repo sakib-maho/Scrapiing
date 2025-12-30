@@ -11,6 +11,10 @@ from data_handler import DataHandler
 import json
 import os
 from datetime import datetime
+import pytz
+
+# Australian timezone
+AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from n8n.cloud
@@ -56,11 +60,13 @@ def scrape():
                 max_listings=max_listings
             )
             
+            # Get Australian time
+            aus_time = datetime.now(AUSTRALIA_TZ)
             result = {
                 "success": True,
                 "listings_count": len(listings),
                 "listings": listings,
-                "scraped_at": datetime.now().isoformat()
+                "scraped_at": aus_time.isoformat()
             }
             
             # Save data if listings found
@@ -96,11 +102,13 @@ def scrape():
         except Exception as e:
             error_msg = str(e)
             error_trace = traceback.format_exc()
+            # Get Australian time
+            aus_time = datetime.now(AUSTRALIA_TZ)
             return jsonify({
                 "success": False,
                 "error": error_msg,
                 "traceback": error_trace,
-                "scraped_at": datetime.now().isoformat()
+                "scraped_at": aus_time.isoformat()
             }), 500
         finally:
             scraper.close()

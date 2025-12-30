@@ -8,8 +8,12 @@ import re
 import base64
 from typing import List, Dict, Optional
 from datetime import datetime
+import pytz
 import pandas as pd
 from config import get_config
+
+# Australian timezone
+AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 # Google Sheets API imports
 try:
@@ -86,10 +90,11 @@ class DataHandler:
         """
         filename = filename or self.data_file
         
-        # Add metadata
+        # Add metadata with Australian timezone
+        aus_time = datetime.now(AUSTRALIA_TZ)
         output_data = {
             "metadata": {
-                "scraped_at": datetime.now().isoformat(),
+                "scraped_at": aus_time.isoformat(),
                 "total_items": len(data),
             },
             "data": data,

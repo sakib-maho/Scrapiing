@@ -2,16 +2,17 @@
 Main execution script for Gumtree Scraping Automation
 """
 import sys
+import os
 from gumtree_scraper import GumtreeScraper
 from data_handler import DataHandler
 
-# Hardcoded configuration
-CATEGORY_URL = "s-farming-veterinary/nsw/c21210l3008839"
-MAX_PAGES = 1
-MAX_LISTINGS = 5  # Maximum number of listings to scrape (None = scrape all)
-LOCATION = ""  # Optional location filter
-EXPORT_FORMAT = "all"  # Options: "json", "csv", "excel", "all"
-OUTPUT_FILENAME = None  # None = use default, or specify custom name without extension
+# Configuration from environment variables (Railway) with fallbacks (local)
+CATEGORY_URL = os.environ.get("CATEGORY_URL", "s-farming-veterinary/nsw/c21210l3008839")
+MAX_PAGES = int(os.environ.get("MAX_PAGES", "1"))
+MAX_LISTINGS = int(os.environ.get("MAX_LISTINGS", "5")) if os.environ.get("MAX_LISTINGS") else None
+LOCATION = os.environ.get("LOCATION", "")
+EXPORT_FORMAT = os.environ.get("EXPORT_FORMAT", "all")  # Options: "json", "csv", "excel", "all"
+OUTPUT_FILENAME = os.environ.get("OUTPUT_FILENAME", None)  # None = use default, or specify custom name without extension
 
 
 def main():

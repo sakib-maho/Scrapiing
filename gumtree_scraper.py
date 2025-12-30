@@ -8,10 +8,14 @@ import time
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode
 from datetime import datetime, timedelta
+import pytz
 import requests
 from bs4 import BeautifulSoup
 from scrapfly_client import ScrapflyClient
 from config import get_config
+
+# Australian timezone
+AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 # Debug mode: Set to True to save HTML pages for inspection
 DEBUG_SAVE_HTML = False
@@ -548,7 +552,7 @@ class GumtreeScraper:
                 "description": description,
                 "phone": phone,
                 "phoneNumberExists": phone_exists,
-                "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "scraped_at": datetime.now(AUSTRALIA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
             }
             
             # Add phone reveal URL if phone number exists
@@ -609,7 +613,7 @@ class GumtreeScraper:
                 "description": description,
                 "phone": phone,
                 "phoneNumberExists": phone_exists,
-                "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "scraped_at": datetime.now(AUSTRALIA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
             }
             
             # Add phone reveal URL if phone number exists and we have job_id
