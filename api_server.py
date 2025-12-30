@@ -52,7 +52,8 @@ def scrape():
         data_handler = DataHandler()
         
         try:
-            # Scrape category
+            # Scrape category (this can take time)
+            # Railway timeout is increased to 600 seconds (10 minutes)
             listings = scraper.scrape_category(
                 category=category_url,
                 location=location,
