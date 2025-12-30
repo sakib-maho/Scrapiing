@@ -512,7 +512,12 @@ class DataHandler:
                     if value is None:
                         row.append("")
                     else:
-                        row.append(str(value))
+                        str_value = str(value)
+                        # Fix phone numbers starting with + to prevent formula errors in Google Sheets
+                        # Prefix with single quote to force text format
+                        if header == "phone" and str_value and str_value.startswith("+"):
+                            str_value = "'" + str_value
+                        row.append(str_value)
                 rows.append(row)
             
             # Determine range for append
