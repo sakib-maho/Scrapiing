@@ -1,0 +1,149 @@
+{
+  "name": "Gumtree Scraper Automation (n8n.cloud)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "31a1578d-8c9a-4a81-986d-187ac1d8853d",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -656,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://web-production-1254d.up.railway.app/scrape",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"category_url\": \"s-farming-veterinary/nsw/c21210l3008839\",\n  \"max_pages\": 1,\n  \"max_listings\": 24,\n  \"location\": \"\",\n  \"save_to_sheets\": true\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-request-scraper",
+      "name": "Call Scraper API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "26b1128d-39d0-476d-a57d-fb044c1ab26e",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process successful scraping results\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received from API');\n}\n\nconst response = inputData.json;\nconst listings = Array.isArray(response.listings) ? response.listings : [];\nconst metadata = response.metadata || {};\nconst statistics = response.statistics || {};\n\nconst message = `✅ Scraped ${listings.length} listings successfully at ${response.scraped_at || 'N/A'}\\n` +\n  `Google Sheets: ${response.google_sheets_saved ? 'Saved' : 'Not saved'}\\n` +\n  `Statistics: ${JSON.stringify(statistics, null, 2)}`;\n\nreturn [\n  {\n    json: {\n      success: true,\n      listingsCount: listings.length,\n      scrapedAt: response.scraped_at,\n      googleSheetsSaved: response.google_sheets_saved || false,\n      statistics: statistics,\n      metadata: metadata,\n      message: message,\n      listings: listings\n    }\n  }\n];"
+      },
+      "id": "a7f45a8f-bc91-4dee-ab1b-f1bc9414904e",
+      "name": "Process Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format error response\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received from API');\n}\n\nconst response = inputData.json;\nconst error = response.error || 'Unknown error';\nconst traceback = response.traceback || '';\n\nconst message = `❌ Scraper failed\\n\\nError: ${error}\\n\\nTraceback:\\n${traceback}`;\n\nreturn [\n  {\n    json: {\n      success: false,\n      error: error,\n      traceback: traceback,\n      message: message\n    }\n  }\n];"
+      },
+      "id": "6a9f8a6e-3e2a-4a5c-9f6e-2d7e5f1b3c4d",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call Scraper API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Scraper API": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
+

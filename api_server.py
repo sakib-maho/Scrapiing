@@ -43,7 +43,7 @@ def scrape():
         
         category_url = data.get('category_url', 's-farming-veterinary/nsw/c21210l3008839')
         max_pages = data.get('max_pages', 1)
-        max_listings = data.get('max_listings', 5)
+        max_listings = data.get('max_listings', 24)  # Default to 24 listings
         location = data.get('location', '')
         save_to_sheets = data.get('save_to_sheets', True)
         
@@ -53,7 +53,8 @@ def scrape():
         
         try:
             # Scrape category (this can take time)
-            # Railway timeout is increased to 600 seconds (10 minutes)
+            # Timeout set to 1200 seconds (20 minutes) to handle up to 24 listings
+            # Each listing detail fetch takes ~3-5 seconds, so 24 listings = ~2-4 minutes minimum
             listings = scraper.scrape_category(
                 category=category_url,
                 location=location,
