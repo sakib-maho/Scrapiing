@@ -5,6 +5,7 @@ import json
 import csv
 import os
 import re
+import base64
 from typing import List, Dict, Optional
 from datetime import datetime
 import pandas as pd
@@ -280,27 +281,73 @@ class DataHandler:
         SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
         creds = None
         
-        # Load existing token
-        if os.path.exists(self.token_file):
+        # Check for credentials in environment variables (Railway deployment)
+        google_creds_env = os.environ.get("GOOGLE_CREDENTIALS")
+        google_token_env = os.environ.get("GOOGLE_TOKEN")
+        
+        # Try to load token from environment variable first (Railway)
+        if google_token_env:
+            try:
+                # Token from env var is JSON string
+                token_data = json.loads(google_token_env)
+                creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+                print("Loaded credentials from GOOGLE_TOKEN environment variable")
+            except json.JSONDecodeError as e:
+                print(f"Error: GOOGLE_TOKEN is not valid JSON: {e}")
+                print("Make sure GOOGLE_TOKEN contains the full JSON from token.json")
+                creds = None
+            except Exception as e:
+                print(f"Warning: Could not load credentials from GOOGLE_TOKEN: {e}")
+                creds = None
+        
+        # Fallback: Load existing token from file (local development)
+        if not creds and os.path.exists(self.token_file):
             creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
         
         # If there are no (valid) credentials available, let the user log in
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not os.path.exists(self.credentials_file):
-                    raise FileNotFoundError(
-                        f"Google credentials file not found: {self.credentials_file}\n"
-                        "Please download credentials.json from Google Cloud Console"
-                    )
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_file, SCOPES)
-                creds = flow.run_local_server(port=0)
+                # Try to refresh the token
+                try:
+                    creds.refresh(Request())
+                except Exception as e:
+                    print(f"Warning: Could not refresh token: {e}")
+                    creds = None
             
-            # Save the credentials for the next run
-            with open(self.token_file, 'w') as token:
-                token.write(creds.to_json())
+            # If still no valid credentials, we need to get new ones
+            if not creds or not creds.valid:
+                # On Railway, we can't do interactive auth
+                # We must have GOOGLE_TOKEN set
+                if google_token_env:
+                    raise FileNotFoundError(
+                        "Google token from GOOGLE_TOKEN environment variable is invalid or expired.\n"
+                        "Please generate a new token.json file and update GOOGLE_TOKEN in Railway."
+                    )
+                elif google_creds_env:
+                    raise FileNotFoundError(
+                        "GOOGLE_CREDENTIALS is set but GOOGLE_TOKEN is missing or invalid.\n"
+                        "On Railway, you need both GOOGLE_CREDENTIALS and GOOGLE_TOKEN environment variables.\n"
+                        "Interactive authentication is not available on Railway."
+                    )
+                else:
+                    # Fallback: Try to load from files (local development only)
+                    if not os.path.exists(self.credentials_file):
+                        raise FileNotFoundError(
+                            f"Google credentials file not found: {self.credentials_file}\n"
+                            "Please download credentials.json from Google Cloud Console\n"
+                            "Or set GOOGLE_CREDENTIALS and GOOGLE_TOKEN environment variables"
+                        )
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        self.credentials_file, SCOPES)
+                    creds = flow.run_local_server(port=0)
+            
+            # Save the credentials for the next run (only if not on Railway)
+            if not google_token_env and os.path.exists(os.path.dirname(self.token_file) or '.'):
+                try:
+                    with open(self.token_file, 'w') as token:
+                        token.write(creds.to_json())
+                except Exception as e:
+                    print(f"Warning: Could not save token file: {e}")
         
         self.service = build('sheets', 'v4', credentials=creds)
         return self.service
