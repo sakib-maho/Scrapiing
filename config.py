@@ -5,12 +5,14 @@ import os
 from typing import Dict
 
 # Scrapfly API Configuration
-SCRAPFLY_API_KEY = "Scp-live-d51b8ee5150e481bba52f3fba8b8cbcd"
-SCRAPFLY_API_URL = "https://api.scrapfly.io/scrape"
+# Use environment variables for security, fallback to hardcoded for local development
+SCRAPFLY_API_KEY = os.environ.get("SCRAPFLY_API_KEY", "Scp-live-d51b8ee5150e481bba52f3fba8b8cbcd")
+SCRAPFLY_API_URL = os.environ.get("SCRAPFLY_API_URL", "https://api.scrapfly.io/scrape")
 
 # Gumtree Credentials
-GUMTREE_EMAIL = "pepeandamino@gmail.com"
-GUMTREE_PASSWORD = "-trust555-"
+# Use environment variables for security, fallback to hardcoded for local development
+GUMTREE_EMAIL = os.environ.get("GUMTREE_EMAIL", "pepeandamino@gmail.com")
+GUMTREE_PASSWORD = os.environ.get("GUMTREE_PASSWORD", "-trust555-")
 
 # Scrapfly API Settings
 SCRAPFLY_CONFIG = {
@@ -32,10 +34,10 @@ DATA_FILE = f"{OUTPUT_DIR}/gumtree_data.json"
 CSV_FILE = f"{OUTPUT_DIR}/gumtree_data.csv"
 
 # Google Sheets Configuration
-GOOGLE_SHEETS_ID = "1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA"
-GOOGLE_SHEETS_RANGE = "Sheet1!A:Z"  # Adjust range as needed
-GOOGLE_CREDENTIALS_FILE = "credentials.json"  # Path to OAuth2 credentials file
-GOOGLE_TOKEN_FILE = "token.json"  # Path to store access token
+GOOGLE_SHEETS_ID = os.environ.get("GOOGLE_SHEETS_ID", "1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA")
+GOOGLE_SHEETS_RANGE = os.environ.get("GOOGLE_SHEETS_RANGE", "Sheet1!A:Z")  # Adjust range as needed
+GOOGLE_CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")  # Path to OAuth2 credentials file
+GOOGLE_TOKEN_FILE = os.environ.get("GOOGLE_TOKEN_FILE", "token.json")  # Path to store access token
 
 # Scraping Settings
 MAX_RETRIES = 3
