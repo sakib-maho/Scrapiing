@@ -98,10 +98,10 @@
     },
     {
       "parameters": {
-        "jsCode": "// Display Google Sheets link\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received');\n}\n\nconst data = inputData.json;\nconst GOOGLE_SHEETS_ID = data.googleSheetsId || '1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA';\nconst GOOGLE_SHEETS_URL = data.googleSheetsUrl || `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit`;\n\nreturn [\n  {\n    json: {\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID,\n      googleSheetsSaved: data.googleSheetsSaved || false,\n      message: `📊 Google Sheet: ${GOOGLE_SHEETS_URL}\\n\\nStatus: ${data.googleSheetsSaved ? '✅ Data saved successfully' : '❌ Data not saved'}\\n\\nClick the link above to view your Google Sheet.`,\n      ...data\n    }\n  }\n];"
+        "jsCode": "// Display Google Sheets link and status\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received');\n}\n\nconst data = inputData.json;\nconst GOOGLE_SHEETS_ID = data.googleSheetsId || '1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA';\nconst GOOGLE_SHEETS_URL = data.googleSheetsUrl || `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit`;\n\nconst statusIcon = data.googleSheetsSaved ? '✅' : '❌';\nconst statusText = data.googleSheetsSaved ? 'Data appended successfully' : 'Failed to append data';\n\nconst message = `📊 Google Sheet Status\\n\\n${statusIcon} ${statusText}\\n\\n🔗 Google Sheet URL:\\n${GOOGLE_SHEETS_URL}\\n\\n📈 Listings Count: ${data.listingsCount || 0}\\n⏰ Scraped At: ${data.scrapedAt || 'N/A'}\\n\\nClick the URL above to view your Google Sheet.`;\n\nreturn [\n  {\n    json: {\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID,\n      googleSheetsSaved: data.googleSheetsSaved || false,\n      statusIcon: statusIcon,\n      statusText: statusText,\n      message: message,\n      ...data\n    }\n  }\n];"
       },
       "id": "show-google-sheet",
-      "name": "Show Google Sheet",
+      "name": "📊 Append in Google Sheet",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -156,7 +156,7 @@
       "main": [
         [
           {
-            "node": "Show Google Sheet",
+            "node": "📊 Append in Google Sheet",
             "type": "main",
             "index": 0
           }
