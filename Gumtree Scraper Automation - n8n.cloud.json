@@ -72,7 +72,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Process successful scraping results\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received from API');\n}\n\nconst response = inputData.json;\nconst listings = Array.isArray(response.listings) ? response.listings : [];\nconst metadata = response.metadata || {};\nconst statistics = response.statistics || {};\n\nconst message = `✅ Scraped ${listings.length} listings successfully at ${response.scraped_at || 'N/A'}\\n` +\n  `Google Sheets: ${response.google_sheets_saved ? 'Saved' : 'Not saved'}\\n` +\n  `Statistics: ${JSON.stringify(statistics, null, 2)}`;\n\nreturn [\n  {\n    json: {\n      success: true,\n      listingsCount: listings.length,\n      scrapedAt: response.scraped_at,\n      googleSheetsSaved: response.google_sheets_saved || false,\n      statistics: statistics,\n      metadata: metadata,\n      message: message,\n      listings: listings\n    }\n  }\n];"
+        "jsCode": "// Process successful scraping results\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received from API');\n}\n\nconst response = inputData.json;\nconst listings = Array.isArray(response.listings) ? response.listings : [];\nconst metadata = response.metadata || {};\nconst statistics = response.statistics || {};\n\n// Google Sheets configuration\nconst GOOGLE_SHEETS_ID = '1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA';\nconst GOOGLE_SHEETS_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit`;\n\nconst message = `✅ Scraped ${listings.length} listings successfully at ${response.scraped_at || 'N/A'}\\n` +\n  `Google Sheets: ${response.google_sheets_saved ? '✅ Saved' : '❌ Not saved'}\\n` +\n  `Google Sheet URL: ${GOOGLE_SHEETS_URL}\\n` +\n  `Statistics: ${JSON.stringify(statistics, null, 2)}`;\n\nreturn [\n  {\n    json: {\n      success: true,\n      listingsCount: listings.length,\n      scrapedAt: response.scraped_at,\n      googleSheetsSaved: response.google_sheets_saved || false,\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID,\n      statistics: statistics,\n      metadata: metadata,\n      message: message,\n      listings: listings\n    }\n  }\n];"
       },
       "id": "a7f45a8f-bc91-4dee-ab1b-f1bc9414904e",
       "name": "Process Results",
@@ -94,6 +94,19 @@
       "position": [
         0,
         144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Display Google Sheets link\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received');\n}\n\nconst data = inputData.json;\nconst GOOGLE_SHEETS_ID = data.googleSheetsId || '1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA';\nconst GOOGLE_SHEETS_URL = data.googleSheetsUrl || `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit`;\n\nreturn [\n  {\n    json: {\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID,\n      googleSheetsSaved: data.googleSheetsSaved || false,\n      message: `📊 Google Sheet: ${GOOGLE_SHEETS_URL}\\n\\nStatus: ${data.googleSheetsSaved ? '✅ Data saved successfully' : '❌ Data not saved'}\\n\\nClick the link above to view your Google Sheet.`,\n      ...data\n    }\n  }\n];"
+      },
+      "id": "show-google-sheet",
+      "name": "Show Google Sheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
       ]
     }
   ],
@@ -133,6 +146,17 @@
         [
           {
             "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Results": {
+      "main": [
+        [
+          {
+            "node": "Show Google Sheet",
             "type": "main",
             "index": 0
           }
