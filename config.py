@@ -42,7 +42,7 @@ GOOGLE_TOKEN_FILE = os.environ.get("GOOGLE_TOKEN_FILE", "token.json")  # Path to
 # Scraping Settings
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds
-REQUEST_TIMEOUT = 30  # seconds
+REQUEST_TIMEOUT = 90  # seconds (increased from 30 to handle slow Scrapfly API responses)
 DELAY_BETWEEN_REQUESTS = 1  # seconds
 
 # Headers for requests

@@ -146,6 +146,9 @@ class ScrapflyClient:
                 "html": "",
                 "status_code": e.response.status_code if hasattr(e, 'response') and e.response else 0,
             }
+        except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+            # Timeout exceptions - let retry decorator handle these
+            raise  # Re-raise so @retry decorator can retry
         except requests.exceptions.RequestException as e:
             return {
                 "success": False,
