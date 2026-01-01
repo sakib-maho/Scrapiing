@@ -399,6 +399,10 @@ class GumtreeScraper:
             listing_links = soup.find_all("a", href=re.compile(r"/s-ad/"))
             
             for link in listing_links:
+                href = link.get("href", "")
+                # Skip post-ad and login pages
+                if "p-post-ad" in href or "post-ad" in href.lower() or "login" in href.lower():
+                    continue
                 listing_data = self._extract_listing_from_link(link, soup)
                 if listing_data:
                     listings.append(listing_data)
