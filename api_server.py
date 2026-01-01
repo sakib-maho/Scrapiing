@@ -46,6 +46,11 @@ def scrape():
         max_pages = data.get('max_pages') if 'max_pages' in data else int(os.environ.get("MAX_PAGES", "1"))
         max_listings = data.get('max_listings') if 'max_listings' in data else (int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24)
         location = data.get('location') or os.environ.get("LOCATION", "")
+        # Strip quotes if location is just empty quotes
+        if location:
+            location = str(location).strip().strip('"').strip("'")
+            if not location:
+                location = ""  # Set to empty string if only quotes
         save_to_sheets = data.get('save_to_sheets', True)  # API parameter only, not in env vars
         
         # Initialize scraper and data handler
