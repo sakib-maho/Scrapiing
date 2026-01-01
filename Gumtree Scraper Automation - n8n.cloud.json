@@ -22,6 +22,7 @@
         "specifyBody": "json",
         "jsonBody": "={\n  \"category_url\": \"s-farming-veterinary/nsw/c21210l3008839\",\n  \"max_pages\": 1,\n  \"max_listings\": 24,\n  \"location\": \"\",\n  \"save_to_sheets\": true\n}",
         "options": {
+          "timeout": 1500000,
           "response": {
             "response": {
               "responseFormat": "json"
