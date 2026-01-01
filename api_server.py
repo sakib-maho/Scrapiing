@@ -99,7 +99,24 @@ def scrape():
             else:
                 result["message"] = "No listings found"
             
-            return jsonify(result), 200
+            # Log that scraping is complete
+            print(f"✅ Scraping completed. Found {len(listings)} listings. Preparing response...")
+            sys.stdout.flush()
+            
+            # Prepare response - don't include full metadata to reduce size
+            # The listings are the important part
+            response_data = {
+                "success": True,
+                "listings_count": len(listings),
+                "listings": listings,
+                "scraped_at": result["scraped_at"],
+                "statistics": result.get("statistics", {})
+            }
+            
+            print(f"✅ Response prepared. Returning to n8n...")
+            sys.stdout.flush()
+            
+            return jsonify(response_data), 200
             
         except Exception as e:
             error_msg = str(e)
@@ -113,7 +130,11 @@ def scrape():
                 "scraped_at": aus_time.isoformat()
             }), 500
         finally:
-            scraper.close()
+            # Close scraper in background to not block response
+            try:
+                scraper.close()
+            except:
+                pass  # Don't block response if cleanup fails
             
     except Exception as e:
         return jsonify({
