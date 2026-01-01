@@ -38,14 +38,15 @@ def scrape():
     }
     """
     try:
-        # Get parameters from request
+        # Get parameters from request (or use Railway environment variables as defaults)
         data = request.get_json() or {}
         
-        category_url = data.get('category_url', 's-farming-veterinary/nsw/c21210l3008839')
-        max_pages = data.get('max_pages', 1)
-        max_listings = data.get('max_listings', 24)  # Default to 24 listings
-        location = data.get('location', '')
-        save_to_sheets = data.get('save_to_sheets', True)
+        # Use Railway environment variables as defaults, request body overrides them
+        category_url = data.get('category_url') or os.environ.get("CATEGORY_URL", "s-farming-veterinary/nsw/c21210l3008839")
+        max_pages = data.get('max_pages') if 'max_pages' in data else int(os.environ.get("MAX_PAGES", "1"))
+        max_listings = data.get('max_listings') if 'max_listings' in data else (int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24)
+        location = data.get('location') or os.environ.get("LOCATION", "")
+        save_to_sheets = data.get('save_to_sheets', True)  # API parameter only, not in env vars
         
         # Initialize scraper and data handler
         scraper = GumtreeScraper()
