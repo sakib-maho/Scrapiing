@@ -418,6 +418,10 @@ class GumtreeScraper:
             if not href or "/s-ad/" not in href:
                 return None
             
+            # Exclude "Post Ad" and other non-listing pages
+            if "p-post-ad" in href or "post-ad" in href.lower() or "login" in href.lower():
+                return None
+            
             # Use Australian base URL from config
             base_url = self.gumtree_config["base_url"]
             
