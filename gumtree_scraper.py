@@ -432,11 +432,13 @@ class GumtreeScraper:
             # Normalize URL
             url = self._normalize_url(href, base_url)
             
-            # Extract job_id from URL (the number at the end)
-            job_id = None
+            # Validate URL - must have a numeric ID at the end (job_id)
             id_match = re.search(r'/(\d+)$', url)
-            if id_match:
-                job_id = id_match.group(1)
+            if not id_match:
+                # Not a valid listing URL (no ID at the end)
+                return None
+            
+            job_id = id_match.group(1)
             
             # Try to find title
             title = link.get_text(strip=True)
