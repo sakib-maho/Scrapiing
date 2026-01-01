@@ -1,0 +1,323 @@
+{
+  "name": "Gumtree Scraper Automation (n8n.cloud with Duplicate Detection)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "31a1578d-8c9a-4a81-986d-187ac1d8853d",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -656,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://web-production-1254d.up.railway.app/scrape",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"category_url\": \"s-farming-veterinary/nsw/c21210l3008839\",\n  \"max_pages\": 1,\n  \"max_listings\": 24,\n  \"location\": \"\",\n  \"save_to_sheets\": false\n}",
+        "options": {
+          "timeout": 1500000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-request-scraper",
+      "name": "Call Scraper API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "26b1128d-39d0-476d-a57d-fb044c1ab26e",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        0,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": ""
+        },
+        "options": {
+          "range": "A1:Z10000"
+        }
+      },
+      "id": "read-existing-sheet",
+      "name": "Read Existing Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store API response for duplicate filtering\n// IMPORTANT: This must output ONE ITEM PER LISTING (not one item with all listings)\nconst inputData = $input.first();\n\nconsole.log('=== STORE API RESPONSE START ===');\n\nif (!inputData || !inputData.json) {\n  console.log('ERROR: No input data received from API');\n  throw new Error('No input data received from API');\n}\n\nconst response = inputData.json;\nconsole.log('Response keys:', Object.keys(response));\nconsole.log('Response has listings?', Array.isArray(response.listings));\nconsole.log('Listings count:', Array.isArray(response.listings) ? response.listings.length : 0);\n\nconst listings = Array.isArray(response.listings) ? response.listings : [];\n\nif (listings.length === 0) {\n  console.log('WARNING: No listings found in response!');\n  console.log('Response structure:', JSON.stringify(response).substring(0, 500));\n  return []; // Return empty array if no listings\n}\n\n// CRITICAL: Output ONE item per listing (n8n needs this format)\n// Each listing becomes a separate item in n8n\nconst output = listings.map(listing => {\n  // Add _fromAPI flag to identify these as new listings from API\n  return { \n    json: { \n      ...listing, \n      _fromAPI: true \n    }\n  };\n});\n\nconsole.log(`Outputting ${output.length} listings (one per item)`);\nif (output.length > 0) {\n  console.log('First listing job_id:', output[0].json.job_id);\n  console.log('First listing has _fromAPI?', output[0].json._fromAPI);\n  console.log('Last listing job_id:', output[output.length - 1].json.job_id);\n}\nconsole.log('=== STORE API RESPONSE END ===');\n\nreturn output;"
+      },
+      "id": "store-api-response",
+      "name": "Store API Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter duplicates: Compare new listings with existing sheet data by job_id ONLY\n// Simple comparison: if job_id matches, skip it\n\n// Get all inputs - should have both existing sheet data and new listings\nconst allInputs = $input.all();\n\nconsole.log('=== DUPLICATE DETECTION START ===');\nconsole.log('Total inputs received:', allInputs.length);\n\n// DEBUG: Log first few inputs to see what we're getting\nif (allInputs.length > 0) {\n  console.log('First input:', JSON.stringify(allInputs[0].json).substring(0, 200));\n  console.log('First input has _fromAPI?', allInputs[0].json?._fromAPI);\n  console.log('First input job_id:', allInputs[0].json?.job_id);\n}\n\n// DEBUG: Count inputs by type\nconst withFromAPI = allInputs.filter(item => item.json && item.json._fromAPI === true).length;\nconst withoutFromAPI = allInputs.filter(item => item.json && !item.json._fromAPI).length;\nconsole.log('Inputs with _fromAPI flag:', withFromAPI);\nconsole.log('Inputs without _fromAPI flag:', withoutFromAPI);\n\n// Separate existing sheet data from new listings\n// Existing sheet data comes from Read Existing Sheet node (no _fromAPI flag)\n// New listings come from Store API Response node (has _fromAPI: true flag)\n\nlet existingData = [];\nlet newListings = [];\n\n// Use _fromAPI flag to separate\nfor (const item of allInputs) {\n  if (!item.json) continue;\n  \n  // Skip header row from Google Sheets\n  if (!item.json._fromAPI && item.json.job_id === 'job_id') {\n    console.log('Skipping header row');\n    continue;\n  }\n  \n  // Check for _fromAPI flag (can be true, 'true', or 1)\n  const hasFromAPI = item.json._fromAPI === true || item.json._fromAPI === 'true' || item.json._fromAPI === 1;\n  \n  if (hasFromAPI) {\n    // This is a new listing from API\n    console.log(`Found API listing: job_id=${item.json.job_id}`);\n    newListings.push(item.json);\n  } else if (item.json.job_id !== undefined && item.json.job_id !== 'job_id' && item.json.job_id !== '') {\n    // This is existing data from Google Sheets (no _fromAPI flag)\n    existingData.push(item.json);\n  } else {\n    // Debug: log items that don't match either category\n    console.log('Item not categorized:', { \n      hasFromAPI: item.json._fromAPI, \n      job_id: item.json.job_id,\n      keys: Object.keys(item.json).slice(0, 5)\n    });\n  }\n}\n\nconsole.log('Existing data from Google Sheets:', existingData.length);\nconsole.log('New listings from API:', newListings.length);\n\n// DEBUG: If newListings is 0 but we have inputs with _fromAPI, something is wrong\nif (newListings.length === 0 && withFromAPI > 0) {\n  console.log('ERROR: Found inputs with _fromAPI but no new listings extracted!');\n  console.log('Sample input with _fromAPI:', JSON.stringify(allInputs.find(item => item.json && item.json._fromAPI)).substring(0, 300));\n}\n\n// CRITICAL CHECK: If no existing data found, log all inputs for debugging\nif (existingData.length === 0) {\n  console.log('WARNING: NO EXISTING DATA FOUND!');\n  console.log('This means duplicate detection will NOT work!');\n  console.log('All inputs without _fromAPI flag:');\n  allInputs.filter(item => item.json && !item.json._fromAPI).forEach((item, idx) => {\n    console.log(`  Input ${idx}:`, JSON.stringify(item.json).substring(0, 150));\n  });\n  console.log('Possible causes:');\n  console.log('  1. Google Sheets read failed or returned empty');\n  console.log('  2. Sheet ID not set correctly');\n  console.log('  3. Google credentials not connected');\n  console.log('  4. Data format mismatch');\n}\n\n// If no new listings, return message with debug info\nif (!newListings || newListings.length === 0) {\n  return [{\n    json: {\n      message: 'No new listings to process',\n      new: 0,\n      skipped: 0,\n      existing: existingData.length,\n      debug: {\n        totalInputs: allInputs.length,\n        inputsWithFromAPI: withFromAPI,\n        inputsWithoutFromAPI: withoutFromAPI,\n        extractedExisting: existingData.length,\n        extractedNew: newListings.length\n      }\n    }\n  }];\n}\n\n// Helper function to normalize job_id for comparison\n// Handles: numbers, strings, null, undefined, whitespace\nfunction normalizeJobId(jobId) {\n  if (jobId === null || jobId === undefined || jobId === '') return '';\n  // Convert to string, trim whitespace\n  return String(jobId).trim();\n}\n\n// Create set of existing job_ids (SIMPLE: just job_id comparison)\nconst existingJobIds = new Set();\nfor (const item of existingData) {\n  const normalizedId = normalizeJobId(item.job_id);\n  if (normalizedId) {\n    existingJobIds.add(normalizedId);\n  }\n}\n\nconsole.log('Existing job_ids count:', existingJobIds.size);\nif (existingJobIds.size > 0) {\n  console.log('First 5 existing job_ids:', Array.from(existingJobIds).slice(0, 5));\n} else {\n  console.log('CRITICAL: No existing job_ids found!');\n  console.log('This means ALL listings will be saved, even duplicates!');\n  console.log('Check the Read Existing Sheet node - it may not be returning data.');\n}\n\n// Filter out duplicates from new listings - ONLY by job_id\nconst newData = [];\nlet skippedCount = 0;\n\nfor (const listing of newListings) {\n  const jobId = normalizeJobId(listing.job_id);\n  \n  // Skip if job_id already exists\n  if (jobId && existingJobIds.has(jobId)) {\n    skippedCount++;\n    console.log(`Skipped duplicate by job_id: ${jobId}`);\n    continue;\n  }\n  \n  // Add to new data\n  newData.push(listing);\n  // Track it to avoid duplicates within new listings\n  if (jobId) {\n    existingJobIds.add(jobId);\n  }\n}\n\nconsole.log('New listings after filtering:', newData.length);\nconsole.log('Skipped (duplicates):', skippedCount);\nconsole.log('=== DUPLICATE DETECTION END ===');\n\nif (newData.length === 0) {\n  return [{\n    json: {\n      message: 'No new data to append (all records already exist)',\n      skipped: skippedCount,\n      new: 0,\n      total: newListings.length,\n      existingCount: existingData.length\n    }\n  }];\n}\n\n// Return new listings with metadata (remove _fromAPI flag from output)\nreturn newData.map(listing => {\n  const { _fromAPI, ...cleanListing } = listing;\n  return {\n    json: {\n      ...cleanListing,\n      _isNew: true,\n      _skipped: skippedCount,\n      _new: newData.length,\n      _total: newListings.length\n    }\n  };\n});"
+      },
+      "id": "filter-duplicates",
+      "name": "Filter Duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format listings for Google Sheets (after duplicate filtering)\nconst inputData = $input.all();\n\n// Check if we have a \"no new data\" message - DO NOT format or pass to Google Sheets\nif (inputData.length === 1 && inputData[0].json && inputData[0].json.message) {\n  // Return empty array to prevent Google Sheets node from appending the message\n  // The Success Message node will handle displaying this message\n  return [];\n}\n\n// Get listings (filter out metadata-only items and message objects)\nconst listings = inputData\n  .filter(item => item.json && item.json.job_id && !item.json.message)\n  .map(item => item.json);\n\nif (listings.length === 0) {\n  // Return empty array - no data to append\n  return [];\n}\n\n// Define column headers (matching data_handler.py preferred_order exactly)\nconst headers = [\n  'job_id',\n  'title',\n  'url',\n  'location',\n  'categoryName',\n  'creationDate',\n  'description',\n  'phone',\n  'phoneNumberExists',\n  'phoneRevealUrl',\n  'scraped_at',\n  'lastEdited',\n  'success'\n];\n\n// Format listings for Google Sheets (matching data_handler.py logic)\nconst formattedRows = listings.map(listing => {\n  const row = {};\n  \n  headers.forEach(header => {\n    let value = listing[header];\n    \n    // Handle null/undefined - convert to empty string (matching data_handler.py)\n    if (value === null || value === undefined) {\n      value = '';\n    } else {\n      value = String(value);\n    }\n    \n    // Format phone numbers - prefix with ' if starts with + (matching data_handler.py fix)\n    if (header === 'phone' && value && value.startsWith('+')) {\n      value = `'${value}`;\n    }\n    \n    row[header] = value;\n  });\n  \n  return row;\n});\n\n// Return formatted data - each row becomes a separate item for Google Sheets node\nreturn formattedRows.map(row => ({ json: row }));"
+      },
+      "id": "format-for-sheets",
+      "name": "Format for Google Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $json.job_id }}",
+            "title": "={{ $json.title }}",
+            "url": "={{ $json.url }}",
+            "location": "={{ $json.location }}",
+            "categoryName": "={{ $json.categoryName }}",
+            "creationDate": "={{ $json.creationDate }}",
+            "description": "={{ $json.description }}",
+            "phone": "={{ $json.phone }}",
+            "phoneNumberExists": "={{ $json.phoneNumberExists }}",
+            "phoneRevealUrl": "={{ $json.phoneRevealUrl }}",
+            "scraped_at": "={{ $json.scraped_at }}",
+            "lastEdited": "={{ $json.lastEdited }}",
+            "success": "={{ $json.success }}"
+          }
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "google-sheets-node",
+      "name": "📊 Append to Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Display success message with duplicate info\n// Handle case where Google Sheets node received no data (empty array from Format node)\nconst allData = $input.all();\n\n// Get Sheet ID from Google Sheets node (user sets it manually in n8n UI)\n// Try to get from the previous Google Sheets node\nlet GOOGLE_SHEETS_ID = '';\ntry {\n  const sheetNode = $('📊 Append to Google Sheet').first();\n  if (sheetNode && sheetNode.json && sheetNode.json.documentId) {\n    GOOGLE_SHEETS_ID = sheetNode.json.documentId;\n  }\n} catch (e) {\n  // If not available, leave empty - user needs to set it in n8n UI\n  GOOGLE_SHEETS_ID = '';\n}\nconst GOOGLE_SHEETS_URL = GOOGLE_SHEETS_ID ? `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit` : 'Please set Sheet ID in Google Sheets nodes';\n\n// Check if Google Sheets node received empty data (no new listings to save)\nif (allData.length === 0) {\n  // This means Format node returned empty array (all duplicates)\n  // Get the message from Filter Duplicates node\n  try {\n    const filterNode = $('Filter Duplicates').first();\n    if (filterNode && filterNode.json && filterNode.json.message) {\n      return [{\n        json: {\n          success: true,\n          message: filterNode.json.message,\n          skipped: filterNode.json.skipped || 0,\n          skippedByJobId: filterNode.json.skippedByJobId || 0,\n          skippedByUrl: filterNode.json.skippedByUrl || 0,\n          new: 0,\n          total: filterNode.json.total || 0,\n          existingCount: filterNode.json.existingCount || 0,\n          googleSheetsUrl: GOOGLE_SHEETS_URL,\n          googleSheetsId: GOOGLE_SHEETS_ID\n        }\n      }];\n    }\n  } catch (e) {\n    // Fallback if can't access Filter Duplicates node\n  }\n  \n  return [{\n    json: {\n      success: true,\n      message: 'No new listings to save (all duplicates)',\n      skipped: 0,\n      new: 0,\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID\n    }\n  }];\n}\n\n// Check if we have a message (no new data) from Google Sheets node\nconst inputData = $input.first();\nif (inputData && inputData.json && inputData.json.message) {\n  return [{\n    json: {\n      success: true,\n      message: inputData.json.message,\n      skipped: inputData.json.skipped || 0,\n      new: inputData.json.new || 0,\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID\n    }\n  }];\n}\n\n// We have actual listings that were saved\nconst listingsCount = allData.length;\nconst skipped = inputData.json._skipped || 0;\nconst skippedByJobId = inputData.json._skippedByJobId || 0;\nconst skippedByUrl = inputData.json._skippedByUrl || 0;\nconst total = inputData.json._total || listingsCount;\n\nconst message = `✅ Successfully saved ${listingsCount} new listings to Google Sheet!\\n\\n🔗 Google Sheet URL:\\n${GOOGLE_SHEETS_URL}\\n\\n📈 New Listings: ${listingsCount}\\n⏭️  Skipped (duplicates): ${skipped}\\n   - By job_id: ${skippedByJobId}\\n   - By URL: ${skippedByUrl}\\n📊 Total Scraped: ${total}\\n\\nClick the URL above to view your Google Sheet.`;\n\nreturn [\n  {\n    json: {\n      success: true,\n      listingsCount: listingsCount,\n      skipped: skipped,\n      skippedByJobId: skippedByJobId,\n      skippedByUrl: skippedByUrl,\n      total: total,\n      googleSheetsUrl: GOOGLE_SHEETS_URL,\n      googleSheetsId: GOOGLE_SHEETS_ID,\n      message: message,\n      saved: true\n    }\n  }\n];"
+      },
+      "id": "success-message",
+      "name": "Success Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format error response\nconst inputData = $input.first();\n\nif (!inputData || !inputData.json) {\n  throw new Error('No input data received from API');\n}\n\nconst response = inputData.json;\nconst error = response.error || 'Unknown error';\nconst traceback = response.traceback || '';\n\nconst message = `❌ Scraper failed\\n\\nError: ${error}\\n\\nTraceback:\\n${traceback}`;\n\nreturn [\n  {\n    json: {\n      success: false,\n      error: error,\n      traceback: traceback,\n      message: message\n    }\n  }\n];"
+      },
+      "id": "6a9f8a6e-3e2a-4a5c-9f6e-2d7e5f1b3c4d",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        224
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call Scraper API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Scraper API": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Read Existing Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store API Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Existing Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store API Response": {
+      "main": [
+        [
+          {
+            "node": "Filter Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Format for Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format for Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "📊 Append to Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Append to Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Success Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
+
