@@ -1780,8 +1780,9 @@ class GumtreeScraper:
             params = {}
             if page > 1:
                 params["page"] = str(page)
-            if location:
-                params["location"] = location
+            # Only add location if it's not empty (empty string or None)
+            if location and location.strip():
+                params["location"] = location.strip()
             
             if params:
                 query_string = urlencode(params, doseq=True)
