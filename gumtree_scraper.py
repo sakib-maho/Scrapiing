@@ -1840,6 +1840,7 @@ class GumtreeScraper:
             # Get detailed information for each listing if requested
             if get_details:
                 print(f"  Fetching details for {len(page_listings)} listings...")
+                quota_exceeded = False
                 for i, listing in enumerate(page_listings, 1):
                     if listing.get("url"):
                         # Skip visiting page if phone already found in description
@@ -1861,7 +1862,30 @@ class GumtreeScraper:
                                 if listing.get("creationDate") and not details.get("creationDate"):
                                     details["creationDate"] = listing.get("creationDate")
                                 listing.update(details)
+                            else:
+                                # Log error but continue with basic listing data
+                                error_msg = details.get("error", "Unknown error")
+                                status_code = details.get("status_code", 0)
+                                
+                                # Check for Scrapfly quota/rate limit errors
+                                if status_code == 429:
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Rate limit (429) - continuing with basic data")
+                                elif status_code == 403:
+                                    print(f"    ❌ [{i}/{len(page_listings)}] Scrapfly quota exceeded (403) - stopping scraping")
+                                    print(f"    Error: {error_msg}")
+                                    quota_exceeded = True
+                                    break
+                                elif status_code == 0 or "timeout" in error_msg.lower():
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Request failed/timeout - continuing with basic data: {error_msg[:100]}")
+                                else:
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Failed to fetch details - continuing with basic data: {error_msg[:100]}")
+                            
                             time.sleep(self.config["scraping"]["delay"] * 0.5)  # Shorter delay for details
+                
+                # Stop scraping if quota exceeded
+                if quota_exceeded:
+                    print("⚠️  Stopping scraping due to Scrapfly quota exceeded")
+                    break
             
             listings.extend(page_listings)
             

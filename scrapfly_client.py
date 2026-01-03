@@ -139,6 +139,16 @@ class ScrapflyClient:
                     "retry_after": wait_seconds,
                 }
             
+            # Handle quota exceeded (403 errors)
+            if e.response.status_code == 403:
+                return {
+                    "success": False,
+                    "url": url,
+                    "error": "403 Forbidden - Scrapfly quota/credits may be exhausted. Check your Scrapfly account.",
+                    "html": "",
+                    "status_code": 403,
+                }
+            
             return {
                 "success": False,
                 "url": url,
