@@ -6,7 +6,7 @@ import re
 import json
 import time
 from typing import Dict, List, Optional, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, urlunparse
 from datetime import datetime, timedelta
 import pytz
 import requests
@@ -1768,6 +1768,10 @@ class GumtreeScraper:
         else:
             category_url = f"{self.gumtree_config['base_url']}/{category}"
         
+        # Remove any existing query parameters from base URL (we'll add them back if needed)
+        parsed_url = urlparse(category_url)
+        base_path = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
+        
         listings = []
         
         for page in range(1, max_pages + 1):
@@ -1776,12 +1780,25 @@ class GumtreeScraper:
                 print(f"Reached maximum listings limit ({max_listings}), stopping...")
                 break
             
-            # Build URL with proper encoding
-            params = {}
+            # Build URL with proper pagination format: /page-{page number}/ before category ID
+            # Format: https://www.gumtree.com.au/s-hospitality-tourism/sydney/page-2/c18342l3003435
             if page > 1:
-                params["page"] = str(page)
-            # Only add location if it's not empty (empty string or None)
-            # Also remove quotes if location is just empty quotes
+                # Find the category ID pattern (starts with /c followed by alphanumeric)
+                # Insert /page-{page}/ before the category ID
+                category_id_pattern = re.search(r'(/c[a-z0-9]+)', base_path)
+                if category_id_pattern:
+                    # Insert page number before category ID
+                    category_id_start = category_id_pattern.start()
+                    url = base_path[:category_id_start] + f"/page-{page}" + base_path[category_id_start:]
+                else:
+                    # Fallback: if no category ID pattern found, append /page-{page}/
+                    url = f"{base_path.rstrip('/')}/page-{page}/"
+            else:
+                # Page 1: use URL as-is (no page number in path)
+                url = base_path
+            
+            # Add location as query parameter if provided
+            params = {}
             if location:
                 location = location.strip().strip('"').strip("'")
                 if location:  # Only add if not empty after stripping
@@ -1789,9 +1806,7 @@ class GumtreeScraper:
             
             if params:
                 query_string = urlencode(params, doseq=True)
-                url = f"{category_url}?{query_string}"
-            else:
-                url = category_url
+                url = f"{url}?{query_string}"
             
             print(f"Scraping category page {page}: {url}")
             
