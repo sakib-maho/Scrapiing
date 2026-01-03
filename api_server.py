@@ -44,7 +44,24 @@ def scrape():
         # Use Railway environment variables as defaults, request body overrides them
         category_url = data.get('category_url') or os.environ.get("CATEGORY_URL", "s-farming-veterinary/nsw/c21210l3008839")
         max_pages = data.get('max_pages') if 'max_pages' in data else int(os.environ.get("MAX_PAGES", "1"))
-        max_listings = data.get('max_listings') if 'max_listings' in data else (int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24)
+        
+        # Handle max_listings: if max_pages > 1 and max_listings not explicitly set, use None (scrape all)
+        if 'max_listings' in data:
+            # Explicitly provided in request - use it (could be None, number, or not set)
+            max_listings = data.get('max_listings')
+            if max_listings is not None and max_listings != "":
+                max_listings = int(max_listings)
+            else:
+                max_listings = None
+        else:
+            # Not provided in request - check if max_pages > 1
+            if max_pages > 1:
+                # Scraping multiple pages - default to None (scrape all listings)
+                max_listings = None
+            else:
+                # Single page - use default from env or 24
+                max_listings = int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24
+        
         location = data.get('location') or os.environ.get("LOCATION", "")
         # Strip quotes if location is just empty quotes
         if location:
@@ -155,7 +172,18 @@ def scrape_get():
     try:
         category_url = request.args.get('category_url', 's-farming-veterinary/nsw/c21210l3008839')
         max_pages = int(request.args.get('max_pages', 1))
-        max_listings = int(request.args.get('max_listings', 5))
+        
+        # Handle max_listings: if max_pages > 1 and max_listings not provided, use None (scrape all)
+        max_listings_param = request.args.get('max_listings')
+        if max_listings_param:
+            max_listings = int(max_listings_param)
+        else:
+            # Not provided - check if max_pages > 1
+            if max_pages > 1:
+                max_listings = None  # Scrape all listings when multiple pages
+            else:
+                max_listings = 5  # Default for single page
+        
         location = request.args.get('location', '')
         save_to_sheets = request.args.get('save_to_sheets', 'true').lower() == 'true'
         
