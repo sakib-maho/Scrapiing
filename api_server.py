@@ -63,11 +63,13 @@ def scrape():
                 max_listings = int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24
         
         location = data.get('location') or os.environ.get("LOCATION", "")
-        # Strip quotes if location is just empty quotes
-        if location:
+        # Handle None, null, empty string, or string "None"
+        if location is None or location == "None" or location == "null":
+            location = ""
+        else:
             location = str(location).strip().strip('"').strip("'")
-            if not location:
-                location = ""  # Set to empty string if only quotes
+            if not location or location.lower() == "none":
+                location = ""  # Set to empty string if empty or "none"
         save_to_sheets = data.get('save_to_sheets', True)  # API parameter only, not in env vars
         
         # Initialize scraper and data handler
@@ -185,6 +187,14 @@ def scrape_get():
                 max_listings = 5  # Default for single page
         
         location = request.args.get('location', '')
+        # Handle None, null, or string "None"
+        if location is None or location == "None" or location == "null":
+            location = ""
+        else:
+            location = location.strip().strip('"').strip("'")
+            if not location or location.lower() == "none":
+                location = ""
+        
         save_to_sheets = request.args.get('save_to_sheets', 'true').lower() == 'true'
         
         # Create a POST-like request internally

@@ -1800,8 +1800,16 @@ class GumtreeScraper:
             # Add location as query parameter if provided
             params = {}
             if location:
-                location = location.strip().strip('"').strip("'")
-                if location:  # Only add if not empty after stripping
+                # Handle None, null, or string "None"
+                if location is None or location == "None" or location == "null":
+                    location = ""
+                else:
+                    location = location.strip().strip('"').strip("'")
+                    if not location or location.lower() == "none":
+                        location = ""
+                
+                # Only add to params if location is not empty
+                if location:
                     params["location"] = location
             
             if params:
