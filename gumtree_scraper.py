@@ -1159,9 +1159,13 @@ class GumtreeScraper:
                 match = re.search(pattern, text, re.I)
                 if match:
                     # Extract the date part (usually the last group)
-                    creation_date = match.group(-1).strip() if match.groups() else match.group(0).strip()
+                    groups = match.groups()
+                    if groups and groups[-1]:
+                        creation_date = groups[-1].strip()
+                    else:
+                        creation_date = match.group(0).strip()
                     # If it's just a word like "hour" or "day", get the full match
-                    if len(creation_date) < 5 and match.groups():
+                    if len(creation_date) < 5 and groups:
                         creation_date = match.group(0).strip()
                     if creation_date:
                         break
@@ -1585,9 +1589,13 @@ class GumtreeScraper:
                 match = re.search(pattern, text, re.I)
                 if match:
                     # Extract the date part (usually the last group)
-                    last_edited = match.group(-1).strip() if match.groups() else match.group(0).strip()
+                    groups = match.groups()
+                    if groups and groups[-1]:
+                        last_edited = groups[-1].strip()
+                    else:
+                        last_edited = match.group(0).strip()
                     # If it's just a word like "hour" or "day", get the full match
-                    if len(last_edited) < 5 and match.groups():
+                    if len(last_edited) < 5 and groups:
                         last_edited = match.group(0).strip()
                     if last_edited:
                         break
