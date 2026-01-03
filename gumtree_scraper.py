@@ -685,11 +685,21 @@ class GumtreeScraper:
         if DEBUG_SAVE_HTML:
             self._save_html_for_debug(result["html"], listing_url)
         
-        soup = BeautifulSoup(result["html"], "lxml")
-        details = self._parse_listing_details(soup, listing_url)
-        details["success"] = True
-        
-        return details
+        try:
+            soup = BeautifulSoup(result["html"], "lxml")
+            details = self._parse_listing_details(soup, listing_url)
+            details["success"] = True
+            return details
+        except Exception as e:
+            # Catch any parsing errors (regex, attribute errors, etc.)
+            error_msg = str(e)
+            import traceback
+            print(f"    ⚠️  Error parsing listing details: {error_msg[:200]}")
+            return {
+                "url": listing_url,
+                "error": f"Parsing error: {error_msg}",
+                "success": False,
+            }
     
     def _parse_listing_details(self, soup: BeautifulSoup, url: str) -> Dict:
         """Parse detailed listing information"""
