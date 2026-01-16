@@ -12,12 +12,154 @@ import json
 import os
 from datetime import datetime
 import pytz
+import threading
+import time
+import uuid
+import requests
 
 # Australian timezone
 AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from n8n.cloud
+
+def _normalize_location(raw_location):
+    if raw_location is None or raw_location == "None" or raw_location == "null":
+        return ""
+    location = str(raw_location).strip().strip('"').strip("'")
+    if not location or location.lower() == "none":
+        return ""
+    return location
+
+def _parse_scrape_params(data):
+    # Use Railway environment variables as defaults, request body overrides them
+    category_url = data.get('category_url') or os.environ.get("CATEGORY_URL", "s-farming-veterinary/nsw/c21210l3008839")
+    max_pages = data.get('max_pages') if 'max_pages' in data else int(os.environ.get("MAX_PAGES", "1"))
+
+    # Handle max_listings: if max_pages > 1 and max_listings not explicitly set, use None (scrape all)
+    if 'max_listings' in data:
+        max_listings = data.get('max_listings')
+        if max_listings is not None and max_listings != "":
+            max_listings = int(max_listings)
+        else:
+            max_listings = None
+    else:
+        if max_pages > 1:
+            max_listings = None
+        else:
+            max_listings = int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24
+
+    location = _normalize_location(data.get('location') or os.environ.get("LOCATION", ""))
+    save_to_sheets = data.get('save_to_sheets', True)
+
+    return {
+        "category_url": category_url,
+        "max_pages": max_pages,
+        "max_listings": max_listings,
+        "location": location,
+        "save_to_sheets": save_to_sheets
+    }
+
+def _build_result_url(output_path):
+    base_url = os.environ.get("N8N_RESULT_BASE_URL")
+    if not base_url:
+        return None
+    base_url = base_url.rstrip("/")
+    filename = os.path.basename(output_path)
+    return f"{base_url}/{filename}"
+
+def _post_callback(payload):
+    callback_url = os.environ.get("N8N_CALLBACK_URL")
+    if not callback_url:
+        print("⚠️ N8N_CALLBACK_URL is not set; skipping callback.")
+        return
+    headers = {
+        "Connection": "close",
+        "Accept-Encoding": "identity"
+    }
+    try:
+        response = requests.post(callback_url, json=payload, timeout=30, headers=headers)
+        print(f"✅ Callback sent. Status={response.status_code}")
+    except Exception as exc:
+        print(f"❌ Failed to send callback: {exc}")
+
+def run_job_and_callback(job_id, params):
+    start_time = time.time()
+    print(f"🚀 Job started. jobId={job_id}")
+    sys.stdout.flush()
+
+    scraper = GumtreeScraper()
+    data_handler = DataHandler()
+    secret = os.environ.get("N8N_WEBHOOK_SECRET", "")
+
+    try:
+        listings = scraper.scrape_category(
+            category=params["category_url"],
+            location=params["location"],
+            max_pages=params["max_pages"],
+            max_listings=params["max_listings"]
+        )
+
+        aus_time = datetime.now(AUSTRALIA_TZ)
+        result = {
+            "success": True,
+            "listings_count": len(listings),
+            "listings": listings,
+            "scraped_at": aus_time.isoformat()
+        }
+
+        if listings:
+            data_handler._clear_output_files()
+
+            if params["save_to_sheets"]:
+                success = data_handler.save_to_google_sheets(listings)
+                result["google_sheets_saved"] = success
+                if not success:
+                    result["warning"] = "Failed to save to Google Sheets. Saved to local files as backup."
+
+            data_handler.save_json(listings)
+            result["statistics"] = data_handler.get_statistics(listings)
+
+        payload = {
+            "success": True,
+            "jobId": job_id,
+            "secret": secret
+        }
+
+        listings_json = json.dumps(listings, ensure_ascii=True)
+        max_bytes = int(os.environ.get("N8N_MAX_CALLBACK_BYTES", "4000000"))
+        if len(listings_json.encode("utf-8")) > max_bytes:
+            output_file = os.path.join(data_handler.output_dir, data_handler.data_file)
+            result_url = _build_result_url(output_file)
+            if result_url:
+                payload["resultUrl"] = result_url
+                print(f"📦 Payload too large; sending resultUrl={result_url}")
+            else:
+                payload["listings"] = listings
+                print("⚠️ Payload too large but N8N_RESULT_BASE_URL not set; sending listings inline.")
+        else:
+            payload["listings"] = listings
+
+        _post_callback(payload)
+
+    except Exception as exc:
+        error_trace = traceback.format_exc()
+        payload = {
+            "success": False,
+            "jobId": job_id,
+            "error": str(exc),
+            "traceback": error_trace,
+            "secret": secret
+        }
+        _post_callback(payload)
+    finally:
+        try:
+            scraper.close()
+        except Exception:
+            pass
+        elapsed = time.time() - start_time
+        print(f"✅ Job finished. jobId={job_id} duration={elapsed:.2f}s")
+        sys.stdout.flush()
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -38,129 +180,22 @@ def scrape():
     }
     """
     try:
-        # Get parameters from request (or use Railway environment variables as defaults)
         data = request.get_json() or {}
-        
-        # Use Railway environment variables as defaults, request body overrides them
-        category_url = data.get('category_url') or os.environ.get("CATEGORY_URL", "s-farming-veterinary/nsw/c21210l3008839")
-        max_pages = data.get('max_pages') if 'max_pages' in data else int(os.environ.get("MAX_PAGES", "1"))
-        
-        # Handle max_listings: if max_pages > 1 and max_listings not explicitly set, use None (scrape all)
-        if 'max_listings' in data:
-            # Explicitly provided in request - use it (could be None, number, or not set)
-            max_listings = data.get('max_listings')
-            if max_listings is not None and max_listings != "":
-                max_listings = int(max_listings)
-            else:
-                max_listings = None
-        else:
-            # Not provided in request - check if max_pages > 1
-            if max_pages > 1:
-                # Scraping multiple pages - default to None (scrape all listings)
-                max_listings = None
-            else:
-                # Single page - use default from env or 24
-                max_listings = int(os.environ.get("MAX_LISTINGS", "24")) if os.environ.get("MAX_LISTINGS") else 24
-        
-        location = data.get('location') or os.environ.get("LOCATION", "")
-        # Handle None, null, empty string, or string "None"
-        if location is None or location == "None" or location == "null":
-            location = ""
-        else:
-            location = str(location).strip().strip('"').strip("'")
-            if not location or location.lower() == "none":
-                location = ""  # Set to empty string if empty or "none"
-        save_to_sheets = data.get('save_to_sheets', True)  # API parameter only, not in env vars
-        
-        # Initialize scraper and data handler
-        scraper = GumtreeScraper()
-        data_handler = DataHandler()
-        
-        try:
-            # Scrape category (this can take time)
-            # Timeout set to 1200 seconds (20 minutes) to handle up to 24 listings
-            # Each listing detail fetch takes ~3-5 seconds, so 24 listings = ~2-4 minutes minimum
-            listings = scraper.scrape_category(
-                category=category_url,
-                location=location,
-                max_pages=max_pages,
-                max_listings=max_listings
-            )
-            
-            # Get Australian time
-            aus_time = datetime.now(AUSTRALIA_TZ)
-            result = {
-                "success": True,
-                "listings_count": len(listings),
-                "listings": listings,
-                "scraped_at": aus_time.isoformat()
-            }
-            
-            # Save data if listings found
-            if listings:
-                # Clear old output files
-                data_handler._clear_output_files()
-                
-                # Save to Google Sheets if requested
-                if save_to_sheets:
-                    success = data_handler.save_to_google_sheets(listings)
-                    result["google_sheets_saved"] = success
-                    if not success:
-                        result["warning"] = "Failed to save to Google Sheets. Saved to local files as backup."
-                
-                # Always save JSON locally
-                data_handler.save_json(listings)
-                
-                # Get statistics
-                stats = data_handler.get_statistics(listings)
-                result["statistics"] = stats
-                
-                # Read the saved JSON file to include in response
-                output_file = os.path.join(data_handler.output_dir, data_handler.data_file)
-                if os.path.exists(output_file):
-                    with open(output_file, 'r', encoding='utf-8') as f:
-                        saved_data = json.load(f)
-                        result["metadata"] = saved_data.get("metadata", {})
-            else:
-                result["message"] = "No listings found"
-            
-            # Log that scraping is complete
-            print(f"✅ Scraping completed. Found {len(listings)} listings. Preparing response...")
-            sys.stdout.flush()
-            
-            # Prepare response - don't include full metadata to reduce size
-            # The listings are the important part
-            response_data = {
-                "success": True,
-                "listings_count": len(listings),
-                "listings": listings,
-                "scraped_at": result["scraped_at"],
-                "statistics": result.get("statistics", {})
-            }
-            
-            print(f"✅ Response prepared. Returning to n8n...")
-            sys.stdout.flush()
-            
-            return jsonify(response_data), 200
-            
-        except Exception as e:
-            error_msg = str(e)
-            error_trace = traceback.format_exc()
-            # Get Australian time
-            aus_time = datetime.now(AUSTRALIA_TZ)
-            return jsonify({
-                "success": False,
-                "error": error_msg,
-                "traceback": error_trace,
-                "scraped_at": aus_time.isoformat()
-            }), 500
-        finally:
-            # Close scraper in background to not block response
-            try:
-                scraper.close()
-            except:
-                pass  # Don't block response if cleanup fails
-            
+        params = _parse_scrape_params(data)
+        job_id = str(uuid.uuid4())
+
+        thread = threading.Thread(
+            target=run_job_and_callback,
+            args=(job_id, params),
+            daemon=True
+        )
+        thread.start()
+
+        return jsonify({
+            "success": True,
+            "jobId": job_id,
+            "status": "started"
+        }), 200
     except Exception as e:
         return jsonify({
             "success": False,
@@ -187,17 +222,10 @@ def scrape_get():
                 max_listings = 5  # Default for single page
         
         location = request.args.get('location', '')
-        # Handle None, null, or string "None"
-        if location is None or location == "None" or location == "null":
-            location = ""
-        else:
-            location = location.strip().strip('"').strip("'")
-            if not location or location.lower() == "none":
-                location = ""
+        location = _normalize_location(location)
         
         save_to_sheets = request.args.get('save_to_sheets', 'true').lower() == 'true'
         
-        # Create a POST-like request internally
         data = {
             "category_url": category_url,
             "max_pages": max_pages,
@@ -205,11 +233,9 @@ def scrape_get():
             "location": location,
             "save_to_sheets": save_to_sheets
         }
-        
-        # Temporarily set request.json
+
         original_json = request.json
         request.json = data
-        
         try:
             return scrape()
         finally:
@@ -232,4 +258,3 @@ if __name__ == '__main__':
     print(f"Scrape endpoint: http://{host}:{port}/scrape")
     
     app.run(host=host, port=port, debug=False)
-

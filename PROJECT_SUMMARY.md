@@ -6,7 +6,8 @@ Gumtree Scraping Automation for Australian listings with Google Sheets integrati
 ## Core Files
 
 ### Python Scripts
-- **`main.py`**: Main execution script with hardcoded configuration
+- **`main.py`**: Main execution script (uses environment variables with fallbacks)
+- **`api_server.py`**: Flask API server for Railway/n8n.cloud deployment
 - **`gumtree_scraper.py`**: Main scraper class with all extraction logic
 - **`scrapfly_client.py`**: Scrapfly API client wrapper
 - **`data_handler.py`**: Data export and Google Sheets integration
@@ -14,6 +15,9 @@ Gumtree Scraping Automation for Australian listings with Google Sheets integrati
 
 ### Configuration Files
 - **`requirements.txt`**: Python dependencies
+- **`Procfile`**: Railway deployment configuration (gunicorn server)
+- **`runtime.txt`**: Python runtime version for Railway
+- **`railway.json`**: Railway project configuration
 - **`credentials.json`**: Google OAuth2 credentials (not in repo, user must add)
 - **`token.json`**: Google OAuth2 token (auto-generated)
 
@@ -25,8 +29,8 @@ Gumtree Scraping Automation for Australian listings with Google Sheets integrati
 - **`PROJECT_SUMMARY.md`**: This file
 
 ### Automation Files
-- **`Gumtree Scraper Automation.json`**: n8n workflow definition
-- **`n8n_execute_scraper.sh`**: Shell script for n8n execution
+- **`Gumtree Scraper Automation - n8n.cloud with Duplicate Detection.json`**: n8n workflow definition (current version)
+- **`n8n_execute_scraper.sh`**: Shell script for local n8n execution
 
 ### Output
 - **`output/`**: Directory containing scraped data
@@ -48,20 +52,23 @@ Gumtree Scraping Automation for Australian listings with Google Sheets integrati
 - **Secondary**: Local JSON/CSV/Excel files
 
 ### Automation
-- n8n workflow support
-- Manual trigger execution
-- Automatic duplicate detection
+- **Railway Deployment**: Flask API server deployed on Railway for cloud execution
+- **n8n.cloud Integration**: HTTP API endpoints for workflow automation
+- **Local Execution**: Direct Python script execution
+- **Automatic Duplicate Detection**: Prevents duplicate entries in Google Sheets
 
 ## Current Configuration
 
 ### Main Settings (`main.py`)
 ```python
-CATEGORY_URL = "s-farming-veterinary/nsw/c21210l3008839"
-MAX_PAGES = 1
-MAX_LISTINGS = 5
-LOCATION = ""
-EXPORT_FORMAT = "all"
+CATEGORY_URL = os.environ.get("CATEGORY_URL", "s-farming-veterinary/nsw/c21210l3008839")
+MAX_PAGES = int(os.environ.get("MAX_PAGES", "1"))
+MAX_LISTINGS = 2  # Hardcoded (can be overridden via API)
+LOCATION = os.environ.get("LOCATION", "")
+EXPORT_FORMAT = os.environ.get("EXPORT_FORMAT", "all")
 ```
+
+**Note**: Configuration uses environment variables (for Railway) with fallback defaults (for local development).
 
 ### Google Sheets
 - Sheet ID: `1miEzcr-TEERKgI2Zf2BQZkah6hUWR8iGpYeF_NcGMcA`
@@ -91,10 +98,21 @@ EXPORT_FORMAT = "all"
 
 ## Quick Start
 
+### Local Execution
 1. Install dependencies: `pip install -r requirements.txt`
 2. Set up Google Sheets (see `GOOGLE_SHEETS_SETUP.md`)
-3. Configure settings in `main.py` if needed
+3. Configure settings via environment variables or edit `main.py`
 4. Run: `python3 main.py`
+
+### Railway Deployment
+1. Deploy to Railway (uses `Procfile` for gunicorn server)
+2. Set environment variables in Railway dashboard
+3. Access API at: `https://your-railway-app.up.railway.app/scrape`
+
+### n8n.cloud Integration
+1. Import workflow: `Gumtree Scraper Automation - n8n.cloud with Duplicate Detection.json`
+2. Configure Railway API URL in workflow
+3. Set up schedule or manual trigger
 
 ## Verification Checklist
 
@@ -110,9 +128,12 @@ EXPORT_FORMAT = "all"
 
 ## Notes
 
-- Local output files are overwritten on each run
-- Google Sheets only appends new records (duplicates skipped)
-- Phone numbers are extracted from descriptions or detected via "Show number"
-- Dates are converted from relative format to exact dates
-- All data is saved in consistent column order
+- **Configuration**: Uses environment variables for Railway deployment, with fallback defaults for local development
+- **API Server**: Flask API server (`api_server.py`) handles HTTP requests from n8n.cloud
+- **Local Execution**: `main.py` can be run directly for local testing
+- **Output Files**: Local output files are overwritten on each run
+- **Google Sheets**: Only appends new records (duplicates detected by `job_id` and `url`)
+- **Phone Numbers**: Extracted from descriptions or detected via "Show number" button
+- **Dates**: Converted from relative format ("2 days ago") to exact dates (YYYY-MM-DD)
+- **Column Order**: All data is saved in consistent column order across all export formats
 
