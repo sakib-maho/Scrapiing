@@ -248,6 +248,59 @@ def scrape_get():
             "traceback": traceback.format_exc()
         }), 500
 
+
+@app.route('/debug/scrape_once', methods=['GET', 'POST'])
+def debug_scrape_once():
+    """
+    Debug endpoint: run a single-page scrape with max_listings<=5 and return results inline.
+    Does NOT trigger callback and does NOT save to Google Sheets.
+    """
+    try:
+        if request.method == "POST":
+            data = request.get_json() or {}
+            params = _parse_scrape_params(data)
+        else:
+            data = {
+                "category_url": request.args.get("category_url"),
+                "max_pages": 1,
+                "max_listings": request.args.get("max_listings"),
+                "location": request.args.get("location", ""),
+                "save_to_sheets": False,
+            }
+            params = _parse_scrape_params(data)
+
+        params["max_pages"] = 1
+        # cap to 5 for safety
+        if params.get("max_listings") is None:
+            params["max_listings"] = 5
+        params["max_listings"] = min(int(params["max_listings"]), 5)
+        params["save_to_sheets"] = False
+
+        scraper = GumtreeScraper()
+        started = time.time()
+        print(f"🐞 debug_scrape_once started category={params['category_url']} max_listings={params['max_listings']}")
+        sys.stdout.flush()
+        try:
+            listings = scraper.scrape_category(
+                category=params["category_url"],
+                location=params["location"],
+                max_pages=params["max_pages"],
+                max_listings=params["max_listings"],
+            )
+        finally:
+            try:
+                scraper.close()
+            except Exception:
+                pass
+
+        elapsed = time.time() - started
+        print(f"🐞 debug_scrape_once finished duration={elapsed:.2f}s listings={len(listings)}")
+        sys.stdout.flush()
+
+        return jsonify({"success": True, "listings": listings, "duration_s": elapsed}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
+
 if __name__ == '__main__':
     # Run the server
     port = int(os.environ.get('PORT', 5001))  # Changed to 5001 to avoid AirPlay conflict
