@@ -97,6 +97,8 @@ class ScrapflyClient:
 
         allow_asp = os.environ.get("SCRAPFLY_ALLOW_ASP", "true").lower() == "true"
         allow_premium = os.environ.get("SCRAPFLY_ALLOW_PREMIUM", "true").lower() == "true"
+        fallback_on_422 = os.environ.get("SCRAPFLY_FALLBACK_ON_422", "true").lower() == "true"
+        force_no_asp_premium = False
 
         fast_params = {
             "render_js": False,
@@ -135,6 +137,9 @@ class ScrapflyClient:
             step["render_js"] = bool(kwargs.get("render_js", step["render_js"]))
             step["asp"] = bool(kwargs.get("asp", step["asp"]))
             step["premium_proxy"] = bool(kwargs.get("premium_proxy", step["premium_proxy"]))
+            if force_no_asp_premium:
+                step["asp"] = False
+                step["premium_proxy"] = False
 
             # Build query parameters
             query_params = {
@@ -213,6 +218,19 @@ class ScrapflyClient:
                     elif api_http_status >= 500:
                         reason = "http_error"
                         last_error = f"scrapfly_api_5xx api_http_status={api_http_status}"
+                    elif api_http_status == 422 and fallback_on_422 and (step.get("asp") or step.get("premium_proxy")):
+                        reason = "invalid_params"
+                        last_error = f"scrapfly_api_error api_http_status=422"
+                        force_no_asp_premium = True
+                        step_idx = 0
+                        self._log(
+                            "scrapfly_422_fallback",
+                            url=url,
+                            attempt=attempt,
+                            step=step_idx,
+                            message="Retrying without asp/premium_proxy after 422",
+                            **context,
+                        )
                     else:
                         return {
                             "success": False,
