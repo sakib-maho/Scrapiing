@@ -16,6 +16,7 @@ A comprehensive web scraping automation tool for Gumtree Australia using Scrapfl
 - **Data Statistics**: Get insights about scraped data
 - **Error Handling**: Robust error handling and retry mechanisms
 
+
 ## Prerequisites
 
 - Python 3.8 or higher (tested with Python 3.14)
