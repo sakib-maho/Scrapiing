@@ -34,6 +34,8 @@ class GumtreeScraper:
         self.is_australian = True  # Always Australian site
         self.logger = logging.getLogger("gumtree")
         self.detail_concurrency = int(os.environ.get("SCRAPE_CONCURRENCY", "3"))
+        # Best-effort error surfaced to API layer for better callbacks
+        self.last_scrape_error: Optional[Dict[str, Any]] = None
 
     def _log(self, event: str, **fields: Any) -> None:
         parts = [f"event={event}"]
@@ -1936,6 +1938,18 @@ class GumtreeScraper:
             if not result["success"]:
                 error_msg = result.get('error', 'Unknown error')
                 print(f"Failed to scrape page {page}: {error_msg}")
+                self.last_scrape_error = {
+                    "kind": "category",
+                    "page": page,
+                    "url": url,
+                    "error": error_msg,
+                    "status_code": result.get("status_code"),
+                    "attempts": result.get("attempts"),
+                    "params_used": result.get("params_used"),
+                }
+                # If we're rate limited or forbidden, stop early to avoid burning job time
+                if "rate_limited" in str(error_msg).lower() or result.get("status_code") in (429, 403):
+                    break
                 continue
             
             page_listings = self._parse_listings_page(result["html"], url)

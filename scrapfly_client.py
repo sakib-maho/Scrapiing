@@ -4,6 +4,7 @@ Scrapfly API Client for Web Scraping
 import logging
 import random
 import threading
+import os
 import requests
 import time
 import json
@@ -82,7 +83,7 @@ class ScrapflyClient:
         custom_headers = kwargs.pop("headers", None)
         context = kwargs.pop("context", None) or {}
         timeout_s = int(kwargs.pop("timeout", REQUEST_TIMEOUT))
-        max_tries = int(kwargs.pop("max_tries", 4))
+        max_tries = int(kwargs.pop("max_tries", os.environ.get("SCRAPFLY_MAX_TRIES", "4")))
         expect_content = bool(kwargs.pop("expect_content", True))
         expected_contains = kwargs.pop("expected_contains", None)
 
@@ -119,6 +120,7 @@ class ScrapflyClient:
 
         # retry/backoff for transient failures
         backoffs = [5, 10, 20]  # seconds
+        max_retry_sleep_s = int(os.environ.get("SCRAPFLY_MAX_RETRY_SLEEP_S", "120"))
         attempt = 0
         step_idx = 0
 
@@ -162,6 +164,7 @@ class ScrapflyClient:
                 )
                 resp = self._get_session().get(self.api_url, params=query_params, timeout=timeout_s)
                 api_http_status = resp.status_code
+                api_retry_after = resp.headers.get("Retry-After")
                 try:
                     data = resp.json()
                 except Exception:
@@ -188,6 +191,7 @@ class ScrapflyClient:
                     status_code=status_code,
                     blocked=blocked,
                     html_len=len(html),
+                    api_retry_after=api_retry_after,
                     **context,
                 )
 
@@ -256,13 +260,36 @@ class ScrapflyClient:
                 )
 
             # Retry / backoff / escalate policy
-            if reason in ("blocked", "rate_limited"):
+            if reason == "blocked":
                 step_idx = min(step_idx + 1, len(param_steps) - 1)
+            # For rate limiting, don't waste time escalating params; just wait and retry.
 
             # Backoff (cap by list length)
             sleep_s = backoffs[min(attempt - 1, len(backoffs) - 1)]
             # small jitter to avoid thundering herd
             sleep_s = sleep_s + random.uniform(0, 0.5)
+
+            # Honor Retry-After if provided/known (Scrapfly API or result)
+            retry_after_s = None
+            try:
+                # Some APIs return "Retry-After" in headers; also handle numeric strings
+                if 'api_retry_after' in locals() and api_retry_after:
+                    retry_after_s = int(float(str(api_retry_after).strip()))
+            except Exception:
+                retry_after_s = None
+            try:
+                # Some Scrapfly responses may include retry hints in JSON
+                if isinstance(data, dict):
+                    ra = data.get("retry_after") or (data.get("result") or {}).get("retry_after")
+                    if ra is not None:
+                        retry_after_s = int(float(str(ra).strip()))
+            except Exception:
+                pass
+
+            if reason == "rate_limited" and retry_after_s:
+                sleep_s = max(sleep_s, retry_after_s)
+
+            sleep_s = min(float(sleep_s), float(max_retry_sleep_s))
             self._log(
                 "scrapfly_retry_sleep",
                 url=url,
@@ -270,6 +297,7 @@ class ScrapflyClient:
                 step=step_idx,
                 reason=reason,
                 sleep_s=round(sleep_s, 2),
+                retry_after_s=retry_after_s,
                 **context,
             )
             time.sleep(sleep_s)

@@ -126,6 +126,15 @@ def run_job_and_callback(job_id, params):
             "secret": secret
         }
 
+        # Keep output format stable but surface scraping failures clearly for n8n
+        scrape_error = getattr(scraper, "last_scrape_error", None)
+        if scrape_error and not listings:
+            payload["scrapeSuccess"] = False
+            payload["error"] = scrape_error.get("error")
+            payload["scrapeError"] = scrape_error
+        else:
+            payload["scrapeSuccess"] = True
+
         listings_json = json.dumps(listings, ensure_ascii=True)
         max_bytes = int(os.environ.get("N8N_MAX_CALLBACK_BYTES", "4000000"))
         if len(listings_json.encode("utf-8")) > max_bytes:
