@@ -95,6 +95,9 @@ class ScrapflyClient:
         if "gumtree.com.au" in url:
             country = "AU"
 
+        allow_asp = os.environ.get("SCRAPFLY_ALLOW_ASP", "true").lower() == "true"
+        allow_premium = os.environ.get("SCRAPFLY_ALLOW_PREMIUM", "true").lower() == "true"
+
         fast_params = {
             "render_js": False,
             "asp": False,
@@ -102,13 +105,13 @@ class ScrapflyClient:
         }
         hard_params = {
             "render_js": False,
-            "asp": True,
-            "premium_proxy": True,
+            "asp": allow_asp,
+            "premium_proxy": allow_premium,
         }
         hard_js_params = {
             "render_js": True,
-            "asp": True,
-            "premium_proxy": True,
+            "asp": allow_asp,
+            "premium_proxy": allow_premium,
         }
 
         if policy == "fast":
