@@ -165,6 +165,7 @@ class ScrapflyClient:
                 resp = self._get_session().get(self.api_url, params=query_params, timeout=timeout_s)
                 api_http_status = resp.status_code
                 api_retry_after = resp.headers.get("Retry-After")
+                raw_text = resp.text
                 try:
                     data = resp.json()
                 except Exception:
@@ -188,6 +189,8 @@ class ScrapflyClient:
                                 msg = data.get("message") or data.get("detail")
                     except Exception:
                         msg = None
+                    if not msg and raw_text:
+                        msg = raw_text.strip()[:500]
 
                     self._log(
                         "scrapfly_api_http_error",
