@@ -169,6 +169,55 @@ class ScrapflyClient:
                     data = resp.json()
                 except Exception:
                     data = {}
+
+                # If Scrapfly API itself errors (4xx/5xx), surface it clearly.
+                # Note: Target HTTP status is typically in result.status_code; api_http_status reflects Scrapfly API health.
+                if api_http_status >= 400:
+                    # Best-effort message extraction
+                    msg = None
+                    try:
+                        if isinstance(data, dict):
+                            err = data.get("error") or data.get("errors")
+                            if isinstance(err, dict):
+                                msg = err.get("message") or err.get("code") or json.dumps(err, ensure_ascii=True)
+                            elif isinstance(err, list) and err:
+                                msg = json.dumps(err[:1], ensure_ascii=True)
+                            elif err:
+                                msg = str(err)
+                            if not msg:
+                                msg = data.get("message") or data.get("detail")
+                    except Exception:
+                        msg = None
+
+                    self._log(
+                        "scrapfly_api_http_error",
+                        url=url,
+                        attempt=attempt,
+                        step=step_idx,
+                        api_http_status=api_http_status,
+                        api_retry_after=api_retry_after,
+                        message=(msg[:300] if isinstance(msg, str) else msg),
+                        **context,
+                    )
+
+                    # Retry only for rate limit (429) and 5xx. Fail fast for other 4xx (e.g. 401/402/422).
+                    if api_http_status == 429:
+                        reason = "rate_limited"
+                        last_error = f"rate_limited api_http_status=429"
+                    elif api_http_status >= 500:
+                        reason = "http_error"
+                        last_error = f"scrapfly_api_5xx api_http_status={api_http_status}"
+                    else:
+                        return {
+                            "success": False,
+                            "url": url,
+                            "error": f"scrapfly_api_error api_http_status={api_http_status}" + (f" message={msg}" if msg else ""),
+                            "html": "",
+                            "status_code": api_http_status,
+                            "attempts": attempt,
+                            "policy_step": step_idx,
+                            "params_used": {"country": country, **step},
+                        }
                 result_data = data.get("result") if isinstance(data, dict) else {}
                 if not isinstance(result_data, dict):
                     result_data = {}

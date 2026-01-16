@@ -2052,6 +2052,14 @@ class GumtreeScraper:
                             error_msg = details.get("error", "Unknown error")
                             status_code = details.get("status_code", 0)
                             if status_code == 403:
+                                if not self.last_scrape_error:
+                                    self.last_scrape_error = {
+                                        "kind": "detail",
+                                        "url": listing.get("url"),
+                                        "job_id": listing.get("job_id"),
+                                        "error": error_msg,
+                                        "status_code": status_code,
+                                    }
                                 quota_exceeded = True
                                 break
                             print(f"    ⚠️  Detail fetch failed: {error_msg[:120]}")
