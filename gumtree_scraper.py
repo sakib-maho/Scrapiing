@@ -702,6 +702,7 @@ class GumtreeScraper:
                 headers=self.config["headers"],
                 policy="auto",
                 expect_content=True,
+                expected_contains=["/s-ad/", job_id] if job_id else ["/s-ad/"],
                 context={"kind": "detail", "job_id": job_id},
             )
         except requests.exceptions.RequestException as e:
@@ -1917,6 +1918,7 @@ class GumtreeScraper:
                 headers=self.config["headers"],
                 policy="auto",
                 expect_content=True,
+                expected_contains=["/s-ad/"],
                 context={"kind": "category", "page": page},
             )
             fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
@@ -1954,6 +1956,7 @@ class GumtreeScraper:
                     headers=self.config["headers"],
                     policy="hard",
                     expect_content=True,
+                    expected_contains=["/s-ad/"],
                     context={"kind": "category_refetch", "page": page},
                 )
                 refetch_ms = int((time.perf_counter() - refetch_started) * 1000)

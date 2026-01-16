@@ -39,22 +39,32 @@ class ScrapflyClient:
             parts.append(f"{k}={json.dumps(v, ensure_ascii=True)}")
         self.logger.info(" ".join(parts))
 
-    def _is_blocked_or_challenged(self, status_code: int, html: str) -> bool:
+    def _is_blocked_or_challenged(self, status_code: int, html: str, expected_contains: Optional[Any] = None) -> bool:
+        """
+        Heuristics only. For 200 responses, prefer letting the caller's parser decide (e.g. 0 listings)
+        unless the content is clearly wrong/empty.
+        """
         if status_code in (403, 429):
             return True
         if not html:
             return True
         lowered = html.lower()
+
+        # If caller provided "expected" substrings, treat missing expectations as suspicious.
+        if expected_contains:
+            if isinstance(expected_contains, (str, bytes)):
+                expected_list = [expected_contains]
+            else:
+                expected_list = list(expected_contains)
+            if expected_list and not any(str(x).lower() in lowered for x in expected_list if x):
+                return True
+
         markers = [
-            "access denied",
-            "forbidden",
             "captcha",
             "verify you are human",
             "unusual traffic",
             "pardon our interruption",
             "cloudflare",
-            "challenge",
-            "blocked",
         ]
         return any(m in lowered for m in markers)
 
@@ -74,6 +84,7 @@ class ScrapflyClient:
         timeout_s = int(kwargs.pop("timeout", REQUEST_TIMEOUT))
         max_tries = int(kwargs.pop("max_tries", 4))
         expect_content = bool(kwargs.pop("expect_content", True))
+        expected_contains = kwargs.pop("expected_contains", None)
 
         # Allow explicit override; otherwise use "auto" fast->hard->hard+js
         policy = kwargs.pop("policy", "auto")
@@ -165,7 +176,7 @@ class ScrapflyClient:
                     self.session_id = result_data["session"]
 
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
-                blocked = self._is_blocked_or_challenged(status_code, html) if expect_content else False
+                blocked = self._is_blocked_or_challenged(status_code, html, expected_contains=expected_contains) if expect_content else False
 
                 self._log(
                     "scrapfly_request_end",
@@ -180,8 +191,10 @@ class ScrapflyClient:
                     **context,
                 )
 
-                # Success path
-                if api_http_status < 500 and status_code not in (429,) and not blocked:
+                # Success path:
+                # - For 200 responses, return content even if heuristics are "suspicious" and let parsing decide.
+                # - For obvious target errors (403/429) keep failing to enable retries/backoff.
+                if api_http_status < 500 and status_code not in (403, 429) and html:
                     time.sleep(DELAY_BETWEEN_REQUESTS)
                     return {
                         "success": True,
@@ -194,6 +207,7 @@ class ScrapflyClient:
                         "policy_step": step_idx,
                         "params_used": {"country": country, **step},
                         "elapsed_ms": elapsed_ms,
+                        "blocked_suspected": blocked,
                     }
 
                 # Quota exhausted is usually hard-fail (don't spin)
@@ -210,8 +224,8 @@ class ScrapflyClient:
                         "elapsed_ms": elapsed_ms,
                     }
 
-                # Decide retry/fallback
-                reason = "blocked" if blocked else ("rate_limited" if status_code == 429 or api_http_status == 429 else "http_error")
+                # Decide retry/fallback (only for clear transient/denial cases)
+                reason = "blocked" if status_code == 403 else ("rate_limited" if status_code == 429 or api_http_status == 429 else "http_error")
                 last_error = f"{reason} status_code={status_code} api_http_status={api_http_status}"
 
             except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
