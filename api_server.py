@@ -4,6 +4,7 @@ Allows n8n.cloud to trigger the scraper via HTTP requests
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import logging
 import sys
 import traceback
 from gumtree_scraper import GumtreeScraper
@@ -24,6 +25,15 @@ AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from n8n.cloud
+
+# Ensure INFO logs from our structured loggers show up on Railway/Gunicorn
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logging.getLogger("scrapfly").setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
+logging.getLogger("gumtree").setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
 
 # --- Simple single-worker job queue (prevents overlapping scrapes / Scrapfly 429) ---
 JOB_QUEUE: "queue.Queue[tuple[str, dict]]" = queue.Queue()

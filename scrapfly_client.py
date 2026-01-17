@@ -344,6 +344,19 @@ class ScrapflyClient:
                 if error_message:
                     last_error += f" message={error_message}"
 
+                # Make 429 actionable even without INFO logs by including key Scrapfly headers.
+                if reason == "rate_limited" and scrapfly_headers:
+                    conc = scrapfly_headers.get("X-Scrapfly-Account-Concurrent-Usage")
+                    conc_rem = scrapfly_headers.get("X-Scrapfly-Account-Remaining-Concurrent-Usage")
+                    rem_credit = scrapfly_headers.get("X-Scrapfly-Remaining-Api-Credit")
+                    cost = scrapfly_headers.get("X-Scrapfly-Api-Cost")
+                    req_id = scrapfly_headers.get("X-Scrapfly-Request-Id")
+                    last_error += (
+                        f" scrapfly_conc={conc} remaining_conc={conc_rem}"
+                        f" cost={cost} remaining_credit={rem_credit}"
+                        f" request_id={req_id}"
+                    )
+
             except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 reason = "timeout"
