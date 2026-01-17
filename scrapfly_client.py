@@ -378,6 +378,9 @@ class ScrapflyClient:
 
             if reason == "rate_limited" and retry_after_s:
                 sleep_s = max(sleep_s, retry_after_s)
+            if reason == "rate_limited":
+                rate_limit_backoff_s = float(os.environ.get("SCRAPFLY_RATE_LIMIT_BACKOFF_S", "45"))
+                sleep_s = max(sleep_s, rate_limit_backoff_s)
 
             sleep_s = min(float(sleep_s), float(max_retry_sleep_s))
             self._log(
