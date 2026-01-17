@@ -177,6 +177,17 @@ class ScrapflyClient:
                 resp = self._get_session().get(self.api_url, params=query_params, timeout=timeout_s)
                 api_http_status = resp.status_code
                 api_retry_after = resp.headers.get("Retry-After")
+                # Useful Scrapfly diagnostics (limits / credits)
+                scrapfly_headers = {}
+                for hk in (
+                    "X-Scrapfly-Request-Id",
+                    "X-Scrapfly-Api-Cost",
+                    "X-Scrapfly-Remaining-Api-Credit",
+                    "X-Scrapfly-Account-Concurrent-Usage",
+                    "X-Scrapfly-Account-Remaining-Concurrent-Usage",
+                ):
+                    if hk in resp.headers:
+                        scrapfly_headers[hk] = resp.headers.get(hk)
                 raw_text = resp.text
                 try:
                     data = resp.json()
@@ -211,6 +222,7 @@ class ScrapflyClient:
                         step=step_idx,
                         api_http_status=api_http_status,
                         api_retry_after=api_retry_after,
+                        scrapfly_headers=scrapfly_headers,
                         message=(msg[:300] if isinstance(msg, str) else msg),
                         **context,
                     )
@@ -242,6 +254,9 @@ class ScrapflyClient:
                             "error": f"scrapfly_api_error api_http_status={api_http_status}" + (f" message={msg}" if msg else ""),
                             "html": "",
                             "status_code": api_http_status,
+                            "api_http_status": api_http_status,
+                            "retry_after": api_retry_after,
+                            "scrapfly_headers": scrapfly_headers,
                             "attempts": attempt,
                             "policy_step": step_idx,
                             "params_used": {"country": country, **step},
@@ -251,6 +266,16 @@ class ScrapflyClient:
                     result_data = {}
                 html = result_data.get("content", "") or ""
                 status_code = int(result_data.get("status_code") or api_http_status or 0)
+                error_code = None
+                error_message = None
+                try:
+                    if isinstance(data, dict):
+                        err = data.get("error") or {}
+                        if isinstance(err, dict):
+                            error_code = err.get("code")
+                            error_message = err.get("message") or err.get("detail")
+                except Exception:
+                    pass
 
                 if "session" in result_data and not self.session_id:
                     self.session_id = result_data["session"]
@@ -269,6 +294,8 @@ class ScrapflyClient:
                     blocked=blocked,
                     html_len=len(html),
                     api_retry_after=api_retry_after,
+                    scrapfly_headers=scrapfly_headers,
+                    error_code=error_code,
                     **context,
                 )
 
@@ -282,6 +309,7 @@ class ScrapflyClient:
                         "url": url,
                         "html": html,
                         "status_code": status_code or 200,
+                        "api_http_status": api_http_status,
                         "response": data,
                         "session_id": self.session_id,
                         "attempts": attempt,
@@ -289,6 +317,7 @@ class ScrapflyClient:
                         "params_used": {"country": country, **step},
                         "elapsed_ms": elapsed_ms,
                         "blocked_suspected": blocked,
+                        "scrapfly_headers": scrapfly_headers,
                     }
 
                 # Quota exhausted is usually hard-fail (don't spin)
@@ -299,15 +328,21 @@ class ScrapflyClient:
                         "error": "403 Forbidden - target denied or Scrapfly quota/credits may be exhausted.",
                         "html": html,
                         "status_code": 403,
+                        "api_http_status": api_http_status,
                         "attempts": attempt,
                         "policy_step": step_idx,
                         "params_used": {"country": country, **step},
                         "elapsed_ms": elapsed_ms,
+                        "scrapfly_headers": scrapfly_headers,
                     }
 
                 # Decide retry/fallback (only for clear transient/denial cases)
                 reason = "blocked" if status_code == 403 else ("rate_limited" if status_code == 429 or api_http_status == 429 else "http_error")
                 last_error = f"{reason} status_code={status_code} api_http_status={api_http_status}"
+                if error_code:
+                    last_error += f" error_code={error_code}"
+                if error_message:
+                    last_error += f" message={error_message}"
 
             except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -401,6 +436,7 @@ class ScrapflyClient:
             "error": last_error or "Failed after retries",
             "html": "",
             "status_code": 0,
+            "api_http_status": 0,
             "attempts": attempt,
             "policy_step": step_idx,
         }
