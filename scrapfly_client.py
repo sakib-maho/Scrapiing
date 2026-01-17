@@ -99,6 +99,8 @@ class ScrapflyClient:
         allow_premium = os.environ.get("SCRAPFLY_ALLOW_PREMIUM", "true").lower() == "true"
         fallback_on_422 = os.environ.get("SCRAPFLY_FALLBACK_ON_422", "true").lower() == "true"
         force_no_asp_premium = False
+        blocked_js_fallback = os.environ.get("SCRAPFLY_BLOCKED_JS_FALLBACK", "true").lower() == "true"
+        blocked_js_fallback_used = False
 
         fast_params = {
             "render_js": False,
@@ -140,6 +142,8 @@ class ScrapflyClient:
             if force_no_asp_premium:
                 step["asp"] = False
                 step["premium_proxy"] = False
+            if blocked_js_fallback_used:
+                step["render_js"] = True
 
             # Build query parameters
             query_params = {
@@ -334,7 +338,20 @@ class ScrapflyClient:
 
             # Retry / backoff / escalate policy
             if reason == "blocked":
-                step_idx = min(step_idx + 1, len(param_steps) - 1)
+                if blocked_js_fallback and not blocked_js_fallback_used:
+                    blocked_js_fallback_used = True
+                    self.session_id = None
+                    step_idx = 0
+                    self._log(
+                        "scrapfly_blocked_js_fallback",
+                        url=url,
+                        attempt=attempt,
+                        step=step_idx,
+                        message="Retrying with render_js=true and fresh session after block",
+                        **context,
+                    )
+                else:
+                    step_idx = min(step_idx + 1, len(param_steps) - 1)
             # For rate limiting, don't waste time escalating params; just wait and retry.
 
             # Backoff (cap by list length)
