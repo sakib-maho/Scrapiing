@@ -6,7 +6,7 @@ from typing import Dict
 
 # Scrapfly API Configuration
 # Use environment variables for security, fallback to hardcoded for local development
-SCRAPFLY_API_KEY = os.environ.get("SCRAPFLY_API_KEY", "scp-live-25a92d7242df4307a998a16ec72cf375")
+SCRAPFLY_API_KEY = os.environ.get("SCRAPFLY_API_KEY", "Scp-live-d51b8ee5150e481bba52f3fba8b8cbcd")
 SCRAPFLY_API_URL = os.environ.get("SCRAPFLY_API_URL", "https://api.scrapfly.io/scrape")
 
 # Gumtree Credentials
@@ -18,11 +18,10 @@ GUMTREE_PASSWORD = os.environ.get("GUMTREE_PASSWORD", "-trust555-")
 SCRAPFLY_CONFIG = {
     "api_key": SCRAPFLY_API_KEY,
     "url": SCRAPFLY_API_URL,
-    # Default to "fast" settings; scraper will automatically fallback to harder settings only when needed.
-    "render_js": os.environ.get("SCRAPFLY_RENDER_JS_DEFAULT", "false").lower() == "true",
+    "render_js": True,  # Enable JavaScript rendering
     "country": "AU",  # Australia for Gumtree
-    "premium_proxy": os.environ.get("SCRAPFLY_PREMIUM_PROXY_DEFAULT", "false").lower() == "true",
-    "asp": os.environ.get("SCRAPFLY_ASP_DEFAULT", "false").lower() == "true",
+    "premium_proxy": True,  # Use premium proxies
+    "asp": True,  # Anti-scraping protection
 }
 
 # Gumtree Base URLs (Australian site only)
@@ -41,10 +40,10 @@ GOOGLE_CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials
 GOOGLE_TOKEN_FILE = os.environ.get("GOOGLE_TOKEN_FILE", "token.json")  # Path to store access token
 
 # Scraping Settings
-MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
-RETRY_DELAY = float(os.environ.get("RETRY_DELAY", "2"))  # seconds
-REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "240"))  # seconds
-DELAY_BETWEEN_REQUESTS = float(os.environ.get("DELAY_BETWEEN_REQUESTS", "1.5"))  # seconds
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+REQUEST_TIMEOUT = 90  # seconds (increased from 30 to handle slow Scrapfly API responses)
+DELAY_BETWEEN_REQUESTS = 1  # seconds
 
 # Headers for requests
 DEFAULT_HEADERS = {

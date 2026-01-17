@@ -4,7 +4,6 @@ Allows n8n.cloud to trigger the scraper via HTTP requests
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import logging
 import sys
 import traceback
 from gumtree_scraper import GumtreeScraper
@@ -17,55 +16,12 @@ import threading
 import time
 import uuid
 import requests
-import queue
-import hashlib
 
 # Australian timezone
 AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from n8n.cloud
-
-# Ensure INFO logs from our structured loggers show up on Railway/Gunicorn
-_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, _LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-logging.getLogger("scrapfly").setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
-logging.getLogger("gumtree").setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
-
-# --- Simple single-worker job queue (prevents overlapping scrapes / Scrapfly 429) ---
-JOB_QUEUE: "queue.Queue[tuple[str, dict]]" = queue.Queue()
-_WORKER_STARTED = False
-_WORKER_LOCK = threading.Lock()
-_RECENT_SIG_TO_JOB = {}  # signature -> (job_id, ts)
-_RECENT_SIG_TTL_S = int(os.environ.get("JOB_DEDUP_TTL_S", "300"))
-
-
-def _params_signature(params: dict) -> str:
-    # stable signature for deduping n8n retries / duplicates
-    payload = json.dumps(params, sort_keys=True, ensure_ascii=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _ensure_worker():
-    global _WORKER_STARTED
-    with _WORKER_LOCK:
-        if _WORKER_STARTED:
-            return
-
-        def _worker_loop():
-            while True:
-                job_id, params = JOB_QUEUE.get()
-                try:
-                    run_job_and_callback(job_id, params)
-                finally:
-                    JOB_QUEUE.task_done()
-
-        t = threading.Thread(target=_worker_loop, daemon=True)
-        t.start()
-        _WORKER_STARTED = True
 
 def _normalize_location(raw_location):
     if raw_location is None or raw_location == "None" or raw_location == "null":
@@ -170,15 +126,6 @@ def run_job_and_callback(job_id, params):
             "secret": secret
         }
 
-        # Keep output format stable but surface scraping failures clearly for n8n
-        scrape_error = getattr(scraper, "last_scrape_error", None)
-        if scrape_error and not listings:
-            payload["scrapeSuccess"] = False
-            payload["error"] = scrape_error.get("error")
-            payload["scrapeError"] = scrape_error
-        else:
-            payload["scrapeSuccess"] = True
-
         listings_json = json.dumps(listings, ensure_ascii=True)
         max_bytes = int(os.environ.get("N8N_MAX_CALLBACK_BYTES", "4000000"))
         if len(listings_json.encode("utf-8")) > max_bytes:
@@ -235,29 +182,19 @@ def scrape():
     try:
         data = request.get_json() or {}
         params = _parse_scrape_params(data)
-        _ensure_worker()
-
-        # Deduplicate identical requests arriving close together (n8n retries / double triggers)
-        sig = _params_signature(params)
-        now = time.time()
-        existing = _RECENT_SIG_TO_JOB.get(sig)
-        if existing and (now - existing[1]) <= _RECENT_SIG_TTL_S:
-            job_id = existing[0]
-            return jsonify({
-                "success": True,
-                "jobId": job_id,
-                "status": "deduped"
-            }), 200
-
         job_id = str(uuid.uuid4())
-        _RECENT_SIG_TO_JOB[sig] = (job_id, now)
-        JOB_QUEUE.put((job_id, params))
+
+        thread = threading.Thread(
+            target=run_job_and_callback,
+            args=(job_id, params),
+            daemon=True
+        )
+        thread.start()
 
         return jsonify({
             "success": True,
             "jobId": job_id,
-            "status": "queued",
-            "queueSize": JOB_QUEUE.qsize()
+            "status": "started"
         }), 200
     except Exception as e:
         return jsonify({
@@ -310,59 +247,6 @@ def scrape_get():
             "error": f"API error: {str(e)}",
             "traceback": traceback.format_exc()
         }), 500
-
-
-@app.route('/debug/scrape_once', methods=['GET', 'POST'])
-def debug_scrape_once():
-    """
-    Debug endpoint: run a single-page scrape with max_listings<=5 and return results inline.
-    Does NOT trigger callback and does NOT save to Google Sheets.
-    """
-    try:
-        if request.method == "POST":
-            data = request.get_json() or {}
-            params = _parse_scrape_params(data)
-        else:
-            data = {
-                "category_url": request.args.get("category_url"),
-                "max_pages": 1,
-                "max_listings": request.args.get("max_listings"),
-                "location": request.args.get("location", ""),
-                "save_to_sheets": False,
-            }
-            params = _parse_scrape_params(data)
-
-        params["max_pages"] = 1
-        # cap to 5 for safety
-        if params.get("max_listings") is None:
-            params["max_listings"] = 5
-        params["max_listings"] = min(int(params["max_listings"]), 5)
-        params["save_to_sheets"] = False
-
-        scraper = GumtreeScraper()
-        started = time.time()
-        print(f"🐞 debug_scrape_once started category={params['category_url']} max_listings={params['max_listings']}")
-        sys.stdout.flush()
-        try:
-            listings = scraper.scrape_category(
-                category=params["category_url"],
-                location=params["location"],
-                max_pages=params["max_pages"],
-                max_listings=params["max_listings"],
-            )
-        finally:
-            try:
-                scraper.close()
-            except Exception:
-                pass
-
-        elapsed = time.time() - started
-        print(f"🐞 debug_scrape_once finished duration={elapsed:.2f}s listings={len(listings)}")
-        sys.stdout.flush()
-
-        return jsonify({"success": True, "listings": listings, "duration_s": elapsed}), 200
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
 
 if __name__ == '__main__':
     # Run the server

@@ -5,8 +5,6 @@ import os
 import re
 import json
 import time
-import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode, urlparse, urlunparse
 from datetime import datetime, timedelta
@@ -32,40 +30,6 @@ class GumtreeScraper:
         self.client = ScrapflyClient()
         self.gumtree_config = self.config["gumtree"]
         self.is_australian = True  # Always Australian site
-        self.logger = logging.getLogger("gumtree")
-        self.detail_concurrency = int(os.environ.get("SCRAPE_CONCURRENCY", "3"))
-        # Best-effort error surfaced to API layer for better callbacks
-        self.last_scrape_error: Optional[Dict[str, Any]] = None
-
-    def _log(self, event: str, **fields: Any) -> None:
-        parts = [f"event={event}"]
-        for k, v in fields.items():
-            if v is None:
-                continue
-            parts.append(f"{k}={json.dumps(v, ensure_ascii=True)}")
-        self.logger.info(" ".join(parts))
-
-    def _dedupe_listings(self, listings: List[Dict], seen: Optional[set] = None) -> (List[Dict], int, set):
-        """
-        Dedupe by job_id when present, otherwise by normalized url.
-        Returns: (deduped_listings, removed_count, updated_seen)
-        """
-        if seen is None:
-            seen = set()
-        deduped: List[Dict] = []
-        removed = 0
-        for item in listings or []:
-            if not isinstance(item, dict):
-                continue
-            job_id = item.get("job_id")
-            url = (item.get("url") or "").strip()
-            key = f"job:{job_id}" if job_id else f"url:{url}"
-            if not key or key in seen:
-                removed += 1
-                continue
-            seen.add(key)
-            deduped.append(item)
-        return deduped, removed, seen
     
     def _normalize_url(self, href: str, base_url: str = None) -> str:
         """
@@ -691,21 +655,11 @@ class GumtreeScraper:
                 "error": "Invalid URL format",
                 "success": False,
             }
-
-        job_id = None
-        id_match = re.search(r'/(\d+)$', listing_url)
-        if id_match:
-            job_id = id_match.group(1)
         
-        started = time.perf_counter()
         try:
             result = self.client.scrape_with_headers(
                 listing_url,
-                headers=self.config["headers"],
-                policy="auto",
-                expect_content=True,
-                expected_contains=["/s-ad/", job_id] if job_id else ["/s-ad/"],
-                context={"kind": "detail", "job_id": job_id},
+                headers=self.config["headers"]
             )
         except requests.exceptions.RequestException as e:
             return {
@@ -721,22 +675,10 @@ class GumtreeScraper:
             }
         
         if not result["success"]:
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            self._log(
-                "detail_fetch_failed",
-                url=listing_url,
-                job_id=job_id,
-                elapsed_ms=elapsed_ms,
-                error=result.get("error"),
-                status_code=result.get("status_code"),
-                attempts=result.get("attempts"),
-                params_used=result.get("params_used"),
-            )
             return {
                 "url": listing_url,
                 "error": result.get("error"),
                 "success": False,
-                "status_code": result.get("status_code", 0),
             }
         
         # Save HTML for debugging if enabled
@@ -747,30 +689,12 @@ class GumtreeScraper:
             soup = BeautifulSoup(result["html"], "lxml")
             details = self._parse_listing_details(soup, listing_url)
             details["success"] = True
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            self._log(
-                "detail_fetch_ok",
-                url=listing_url,
-                job_id=details.get("job_id") or job_id,
-                elapsed_ms=elapsed_ms,
-                html_len=len(result.get("html") or ""),
-                attempts=result.get("attempts"),
-                params_used=result.get("params_used"),
-            )
             return details
         except Exception as e:
             # Catch any parsing errors (regex, attribute errors, etc.)
             error_msg = str(e)
             import traceback
             print(f"    ⚠️  Error parsing listing details: {error_msg[:200]}")
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            self._log(
-                "detail_parse_error",
-                url=listing_url,
-                job_id=job_id,
-                elapsed_ms=elapsed_ms,
-                error=error_msg[:300],
-            )
             return {
                 "url": listing_url,
                 "error": f"Parsing error: {error_msg}",
@@ -1856,7 +1780,6 @@ class GumtreeScraper:
         Returns:
             List of listing dictionaries
         """
-        job_started = time.perf_counter()
         # Handle category URL (always Australian)
         if category.startswith("http"):
             category_url = category
@@ -1867,8 +1790,7 @@ class GumtreeScraper:
         parsed_url = urlparse(category_url)
         base_path = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
         
-        listings: List[Dict] = []
-        seen = set()
+        listings = []
         
         for page in range(1, max_pages + 1):
             # Stop if we've reached the max_listings limit
@@ -1913,99 +1835,18 @@ class GumtreeScraper:
                 url = f"{url}?{query_string}"
             
             print(f"Scraping category page {page}: {url}")
-
-            fetch_started = time.perf_counter()
+            
             result = self.client.scrape_with_headers(
                 url,
-                headers=self.config["headers"],
-                policy="auto",
-                expect_content=True,
-                expected_contains=["/s-ad/"],
-                context={"kind": "category", "page": page},
-            )
-            fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
-            self._log(
-                "category_fetch",
-                page=page,
-                url=url,
-                elapsed_ms=fetch_ms,
-                success=result.get("success"),
-                status_code=result.get("status_code"),
-                attempts=result.get("attempts"),
-                params_used=result.get("params_used"),
+                headers=self.config["headers"]
             )
             
             if not result["success"]:
                 error_msg = result.get('error', 'Unknown error')
                 print(f"Failed to scrape page {page}: {error_msg}")
-                self.last_scrape_error = {
-                    "kind": "category",
-                    "page": page,
-                    "url": url,
-                    "error": error_msg,
-                    "status_code": result.get("status_code"),
-                    "attempts": result.get("attempts"),
-                    "params_used": result.get("params_used"),
-                }
-                # If we're rate limited or forbidden, stop early to avoid burning job time
-                if "rate_limited" in str(error_msg).lower() or result.get("status_code") in (429, 403):
-                    break
                 continue
             
             page_listings = self._parse_listings_page(result["html"], url)
-
-            extracted_count = len(page_listings)
-            self._log(
-                "category_listings_extracted",
-                page=page,
-                url=url,
-                extracted_count=extracted_count,
-            )
-
-            # If we unexpectedly got 0 listings, try a harder fetch once (no-JS first, then JS inside client)
-            if extracted_count == 0:
-                refetch_started = time.perf_counter()
-                hard_result = self.client.scrape_with_headers(
-                    url,
-                    headers=self.config["headers"],
-                    policy="hard",
-                    expect_content=True,
-                    expected_contains=["/s-ad/"],
-                    context={"kind": "category_refetch", "page": page},
-                )
-                refetch_ms = int((time.perf_counter() - refetch_started) * 1000)
-                self._log(
-                    "category_refetch_hard",
-                    page=page,
-                    url=url,
-                    elapsed_ms=refetch_ms,
-                    success=hard_result.get("success"),
-                    status_code=hard_result.get("status_code"),
-                    attempts=hard_result.get("attempts"),
-                    params_used=hard_result.get("params_used"),
-                )
-                if hard_result.get("success"):
-                    hard_listings = self._parse_listings_page(hard_result.get("html", ""), url)
-                    if len(hard_listings) > extracted_count:
-                        page_listings = hard_listings
-                        extracted_count = len(page_listings)
-                        self._log(
-                            "category_refetch_used",
-                            page=page,
-                            url=url,
-                            extracted_count=extracted_count,
-                        )
-
-            # Dedupe before detail fetch (within+across pages)
-            page_listings, removed, seen = self._dedupe_listings(page_listings, seen=seen)
-            self._log(
-                "category_dedupe",
-                page=page,
-                url=url,
-                deduped_count=len(page_listings),
-                removed_count=removed,
-                unique_total=len(seen),
-            )
             
             # Limit page_listings if max_listings is set
             if max_listings:
@@ -2018,76 +1859,46 @@ class GumtreeScraper:
             if get_details:
                 print(f"  Fetching details for {len(page_listings)} listings...")
                 quota_exceeded = False
-
-                def _needs_detail(l: Dict) -> bool:
-                    return bool(l.get("url")) and not (l.get("phoneNumberExists") and l.get("phone"))
-
-                targets = [l for l in page_listings if _needs_detail(l)]
-                self._log(
-                    "detail_batch_start",
-                    page=page,
-                    total_on_page=len(page_listings),
-                    to_fetch=len(targets),
-                    concurrency=self.detail_concurrency,
-                )
-
-                def _fetch_one(u: str) -> Dict:
-                    return self.get_listing_details(u)
-
-                if self.detail_concurrency <= 1 or len(targets) <= 1:
-                    for i, listing in enumerate(targets, 1):
-                        print(f"    [{i}/{len(targets)}] Fetching: {listing.get('url', '')[:60]}...")
-                        details = _fetch_one(listing["url"])
-                        if details.get("success"):
-                            if listing.get("phone"):
-                                details["phone"] = listing.get("phone")
-                                details["phoneNumberExists"] = True
-                                job_id = listing.get("job_id") or details.get("job_id")
-                                if job_id:
-                                    details["phoneRevealUrl"] = f"https://gt-api.gumtree.com.au/web/vip/reveal-phone-number?adId={job_id}"
-                            if listing.get("creationDate") and not details.get("creationDate"):
-                                details["creationDate"] = listing.get("creationDate")
-                            listing.update(details)
+                for i, listing in enumerate(page_listings, 1):
+                    if listing.get("url"):
+                        # Skip visiting page if phone already found in description
+                        if listing.get("phoneNumberExists") and listing.get("phone"):
+                            print(f"    [{i}/{len(page_listings)}] Phone found in description, skipping page visit: {listing.get('url', '')[:60]}...")
                         else:
-                            error_msg = details.get("error", "Unknown error")
-                            status_code = details.get("status_code", 0)
-                            if status_code == 403:
-                                if not self.last_scrape_error:
-                                    self.last_scrape_error = {
-                                        "kind": "detail",
-                                        "url": listing.get("url"),
-                                        "job_id": listing.get("job_id"),
-                                        "error": error_msg,
-                                        "status_code": status_code,
-                                    }
-                                quota_exceeded = True
-                                break
-                            print(f"    ⚠️  Detail fetch failed: {error_msg[:120]}")
-                else:
-                    with ThreadPoolExecutor(max_workers=self.detail_concurrency) as ex:
-                        future_map = {ex.submit(_fetch_one, l["url"]): l for l in targets}
-                        for fut in as_completed(future_map):
-                            listing = future_map[fut]
-                            try:
-                                details = fut.result()
-                            except Exception as e:
-                                self._log("detail_fetch_exception", url=listing.get("url"), error=str(e)[:200])
-                                continue
+                            print(f"    [{i}/{len(page_listings)}] Fetching: {listing.get('url', '')[:60]}...")
+                            details = self.get_listing_details(listing["url"])
                             if details.get("success"):
+                                # Merge details with listing data (phone from description takes priority)
                                 if listing.get("phone"):
                                     details["phone"] = listing.get("phone")
                                     details["phoneNumberExists"] = True
+                                    # Add phone reveal URL if we have job_id
                                     job_id = listing.get("job_id") or details.get("job_id")
                                     if job_id:
                                         details["phoneRevealUrl"] = f"https://gt-api.gumtree.com.au/web/vip/reveal-phone-number?adId={job_id}"
+                                # Preserve creationDate from search results if detail page doesn't have it
                                 if listing.get("creationDate") and not details.get("creationDate"):
                                     details["creationDate"] = listing.get("creationDate")
                                 listing.update(details)
                             else:
+                                # Log error but continue with basic listing data
+                                error_msg = details.get("error", "Unknown error")
                                 status_code = details.get("status_code", 0)
-                                if status_code == 403:
+                                
+                                # Check for Scrapfly quota/rate limit errors
+                                if status_code == 429:
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Rate limit (429) - continuing with basic data")
+                                elif status_code == 403:
+                                    print(f"    ❌ [{i}/{len(page_listings)}] Scrapfly quota exceeded (403) - stopping scraping")
+                                    print(f"    Error: {error_msg}")
                                     quota_exceeded = True
                                     break
+                                elif status_code == 0 or "timeout" in error_msg.lower():
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Request failed/timeout - continuing with basic data: {error_msg[:100]}")
+                                else:
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Failed to fetch details - continuing with basic data: {error_msg[:100]}")
+                            
+                            time.sleep(self.config["scraping"]["delay"] * 0.5)  # Shorter delay for details
                 
                 # Stop scraping if quota exceeded
                 if quota_exceeded:
@@ -2105,19 +1916,7 @@ class GumtreeScraper:
                 break
             
             time.sleep(self.config["scraping"]["delay"])
-
-        # Final dedupe safety net
-        listings, removed_final, _ = self._dedupe_listings(listings, seen=set())
-        total_ms = int((time.perf_counter() - job_started) * 1000)
-        self._log(
-            "job_done",
-            kind="category",
-            category=category,
-            pages=max_pages,
-            listings_count=len(listings),
-            removed_final=removed_final,
-            elapsed_ms=total_ms,
-        )
+        
         return listings
     
     def _save_html_for_debug(self, html: str, url: str):

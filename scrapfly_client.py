@@ -1,15 +1,12 @@
 """
 Scrapfly API Client for Web Scraping
 """
-import logging
-import random
-import threading
-import os
 import requests
 import time
 import json
 from typing import Dict, Optional, Any
 from config import SCRAPFLY_CONFIG, REQUEST_TIMEOUT, DELAY_BETWEEN_REQUESTS
+from retrying import retry
 
 
 class ScrapflyClient:
@@ -19,56 +16,13 @@ class ScrapflyClient:
         self.api_key = api_key or SCRAPFLY_CONFIG["api_key"]
         self.api_url = SCRAPFLY_CONFIG["url"]
         self.session_id = session_id  # Scrapfly session ID for maintaining cookies
-        self._local = threading.local()
-        self.logger = logging.getLogger("scrapfly")
+        self.session = requests.Session()
+        # Scrapfly API key can be in header or query parameter
+        self.session.headers.update({
+            "X-API-KEY": self.api_key,
+        })
     
-    def _get_session(self) -> requests.Session:
-        """Requests Session is not guaranteed thread-safe; keep one per thread."""
-        sess = getattr(self._local, "session", None)
-        if sess is None:
-            sess = requests.Session()
-            sess.headers.update({"X-API-KEY": self.api_key})
-            self._local.session = sess
-        return sess
-
-    def _log(self, event: str, **fields: Any) -> None:
-        # single-line key=value logs play well with Railway log aggregation
-        parts = [f"event={event}"]
-        for k, v in fields.items():
-            if v is None:
-                continue
-            parts.append(f"{k}={json.dumps(v, ensure_ascii=True)}")
-        self.logger.info(" ".join(parts))
-
-    def _is_blocked_or_challenged(self, status_code: int, html: str, expected_contains: Optional[Any] = None) -> bool:
-        """
-        Heuristics only. For 200 responses, prefer letting the caller's parser decide (e.g. 0 listings)
-        unless the content is clearly wrong/empty.
-        """
-        if status_code in (403, 429):
-            return True
-        if not html:
-            return True
-        lowered = html.lower()
-
-        # If caller provided "expected" substrings, treat missing expectations as suspicious.
-        if expected_contains:
-            if isinstance(expected_contains, (str, bytes)):
-                expected_list = [expected_contains]
-            else:
-                expected_list = list(expected_contains)
-            if expected_list and not any(str(x).lower() in lowered for x in expected_list if x):
-                return True
-
-        markers = [
-            "captcha",
-            "verify you are human",
-            "unusual traffic",
-            "pardon our interruption",
-            "cloudflare",
-        ]
-        return any(m in lowered for m in markers)
-
+    @retry(stop_max_attempt_number=3, wait_fixed=2000)
     def scrape(self, url: str, **kwargs) -> Dict[str, Any]:
         """
         Scrape a URL using Scrapfly API
@@ -80,379 +34,139 @@ class ScrapflyClient:
         Returns:
             Dictionary containing response data
         """
+        # Extract headers if provided
         custom_headers = kwargs.pop("headers", None)
-        context = kwargs.pop("context", None) or {}
-        timeout_s = int(kwargs.pop("timeout", REQUEST_TIMEOUT))
-        max_tries = int(kwargs.pop("max_tries", os.environ.get("SCRAPFLY_MAX_TRIES", "4")))
-        expect_content = bool(kwargs.pop("expect_content", True))
-        expected_contains = kwargs.pop("expected_contains", None)
-
-        # Allow explicit override; otherwise use "auto" fast->hard->hard+js
-        policy = kwargs.pop("policy", "auto")
-
-        # Country detection (Gumtree AU)
-        country = kwargs.get("country", SCRAPFLY_CONFIG.get("country", "AU"))
-        if "gumtree.com.au" in url:
-            country = "AU"
-
-        allow_asp = os.environ.get("SCRAPFLY_ALLOW_ASP", "true").lower() == "true"
-        allow_premium = os.environ.get("SCRAPFLY_ALLOW_PREMIUM", "true").lower() == "true"
-        fallback_on_422 = os.environ.get("SCRAPFLY_FALLBACK_ON_422", "true").lower() == "true"
-        force_no_asp_premium = False
-        blocked_js_fallback = os.environ.get("SCRAPFLY_BLOCKED_JS_FALLBACK", "true").lower() == "true"
-        blocked_js_fallback_used = False
-
-        fast_params = {
-            "render_js": False,
-            "asp": False,
-            "premium_proxy": False,
+        
+        # Build request payload
+        payload = {
+            "url": url,
+            "render_js": kwargs.get("render_js", SCRAPFLY_CONFIG.get("render_js", True)),
+            "country": kwargs.get("country", SCRAPFLY_CONFIG.get("country", "AU")),
+            "premium_proxy": kwargs.get("premium_proxy", SCRAPFLY_CONFIG.get("premium_proxy", True)),
+            "asp": kwargs.get("asp", SCRAPFLY_CONFIG.get("asp", True)),
         }
-        hard_params = {
-            "render_js": False,
-            "asp": allow_asp,
-            "premium_proxy": allow_premium,
-        }
-        hard_js_params = {
-            "render_js": True,
-            "asp": allow_asp,
-            "premium_proxy": allow_premium,
-        }
-
-        if policy == "fast":
-            param_steps = [fast_params]
-        elif policy == "hard":
-            param_steps = [hard_params, hard_js_params]
-        else:
-            param_steps = [fast_params, hard_params, hard_js_params]
-
-        # retry/backoff for transient failures
-        backoffs = [5, 10, 20]  # seconds
-        max_retry_sleep_s = int(os.environ.get("SCRAPFLY_MAX_RETRY_SLEEP_S", "120"))
-        attempt = 0
-        step_idx = 0
-
-        last_error = None
-        while attempt < max_tries:
-            attempt += 1
-            step = param_steps[min(step_idx, len(param_steps) - 1)].copy()
-            # explicit overrides win
-            step["render_js"] = bool(kwargs.get("render_js", step["render_js"]))
-            step["asp"] = bool(kwargs.get("asp", step["asp"]))
-            step["premium_proxy"] = bool(kwargs.get("premium_proxy", step["premium_proxy"]))
-            if force_no_asp_premium:
-                step["asp"] = False
-                step["premium_proxy"] = False
-            if blocked_js_fallback_used:
-                step["render_js"] = True
-
+        
+        # Add custom headers if provided
+        if custom_headers:
+            payload["headers"] = custom_headers
+        
+        # Add any other additional parameters
+        for key, value in kwargs.items():
+            if key not in ["render_js", "country", "premium_proxy", "asp", "headers"]:
+                payload[key] = value
+        
+        try:
+            # Scrapfly API uses GET with query parameters
+            # Detect country from URL if Australian
+            country = payload["country"]
+            if "gumtree.com.au" in url:
+                country = "AU"
             # Build query parameters
             query_params = {
-                "key": self.api_key,
+                "key": self.api_key,  # API key in query string
                 "url": url,
-                "render_js": "true" if step["render_js"] else "false",
+                "render_js": "true" if payload["render_js"] else "false",
                 "country": country,
-                "premium_proxy": "true" if step["premium_proxy"] else "false",
-                "asp": "true" if step["asp"] else "false",
+                "premium_proxy": "true" if payload["premium_proxy"] else "false",
+                "asp": "true" if payload["asp"] else "false",
             }
+            
             if self.session_id:
                 query_params["session"] = self.session_id
+            
+            # Scrapfly expects headers as individual query parameters: headers[Header-Name]=value
+            # Example: headers[User-Agent]=Mozilla/5.0...
             if custom_headers:
                 for header_name, header_value in custom_headers.items():
+                    # Use bracket notation for nested parameters
                     query_params[f"headers[{header_name}]"] = str(header_value)
-
-            started = time.perf_counter()
-            try:
-                self._log(
-                    "scrapfly_request_start",
-                    url=url,
-                    attempt=attempt,
-                    step=step_idx,
-                    timeout_s=timeout_s,
-                    render_js=step["render_js"],
-                    asp=step["asp"],
-                    premium_proxy=step["premium_proxy"],
-                    country=country,
-                    **context,
-                )
-                resp = self._get_session().get(self.api_url, params=query_params, timeout=timeout_s)
-                api_http_status = resp.status_code
-                api_retry_after = resp.headers.get("Retry-After")
-                # Useful Scrapfly diagnostics (limits / credits)
-                scrapfly_headers = {}
-                for hk in (
-                    "X-Scrapfly-Request-Id",
-                    "X-Scrapfly-Api-Cost",
-                    "X-Scrapfly-Remaining-Api-Credit",
-                    "X-Scrapfly-Account-Concurrent-Usage",
-                    "X-Scrapfly-Account-Remaining-Concurrent-Usage",
-                ):
-                    if hk in resp.headers:
-                        scrapfly_headers[hk] = resp.headers.get(hk)
-                raw_text = resp.text
-                try:
-                    data = resp.json()
-                except Exception:
-                    data = {}
-
-                # If Scrapfly API itself errors (4xx/5xx), surface it clearly.
-                # Note: Target HTTP status is typically in result.status_code; api_http_status reflects Scrapfly API health.
-                if api_http_status >= 400:
-                    # Best-effort message extraction
-                    msg = None
-                    try:
-                        if isinstance(data, dict):
-                            err = data.get("error") or data.get("errors")
-                            if isinstance(err, dict):
-                                msg = err.get("message") or err.get("code") or json.dumps(err, ensure_ascii=True)
-                            elif isinstance(err, list) and err:
-                                msg = json.dumps(err[:1], ensure_ascii=True)
-                            elif err:
-                                msg = str(err)
-                            if not msg:
-                                msg = data.get("message") or data.get("detail")
-                    except Exception:
-                        msg = None
-                    if not msg and raw_text:
-                        msg = raw_text.strip()[:500]
-
-                    self._log(
-                        "scrapfly_api_http_error",
-                        url=url,
-                        attempt=attempt,
-                        step=step_idx,
-                        api_http_status=api_http_status,
-                        api_retry_after=api_retry_after,
-                        scrapfly_headers=scrapfly_headers,
-                        message=(msg[:300] if isinstance(msg, str) else msg),
-                        **context,
-                    )
-
-                    # Retry only for rate limit (429) and 5xx. Fail fast for other 4xx (e.g. 401/402/422).
-                    if api_http_status == 429:
-                        reason = "rate_limited"
-                        last_error = f"rate_limited api_http_status=429"
-                    elif api_http_status >= 500:
-                        reason = "http_error"
-                        last_error = f"scrapfly_api_5xx api_http_status={api_http_status}"
-                    elif api_http_status == 422 and fallback_on_422 and (step.get("asp") or step.get("premium_proxy")):
-                        reason = "invalid_params"
-                        last_error = f"scrapfly_api_error api_http_status=422"
-                        force_no_asp_premium = True
-                        step_idx = 0
-                        self._log(
-                            "scrapfly_422_fallback",
-                            url=url,
-                            attempt=attempt,
-                            step=step_idx,
-                            message="Retrying without asp/premium_proxy after 422",
-                            **context,
-                        )
-                    else:
-                        return {
-                            "success": False,
-                            "url": url,
-                            "error": f"scrapfly_api_error api_http_status={api_http_status}" + (f" message={msg}" if msg else ""),
-                            "html": "",
-                            "status_code": api_http_status,
-                            "api_http_status": api_http_status,
-                            "retry_after": api_retry_after,
-                            "scrapfly_headers": scrapfly_headers,
-                            "attempts": attempt,
-                            "policy_step": step_idx,
-                            "params_used": {"country": country, **step},
-                        }
-                result_data = data.get("result") if isinstance(data, dict) else {}
-                if not isinstance(result_data, dict):
-                    result_data = {}
-                html = result_data.get("content", "") or ""
-                status_code = int(result_data.get("status_code") or api_http_status or 0)
-                error_code = None
-                error_message = None
-                try:
-                    if isinstance(data, dict):
-                        err = data.get("error") or {}
-                        if isinstance(err, dict):
-                            error_code = err.get("code")
-                            error_message = err.get("message") or err.get("detail")
-                except Exception:
-                    pass
-
-                if "session" in result_data and not self.session_id:
-                    self.session_id = result_data["session"]
-
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                blocked = self._is_blocked_or_challenged(status_code, html, expected_contains=expected_contains) if expect_content else False
-
-                self._log(
-                    "scrapfly_request_end",
-                    url=url,
-                    attempt=attempt,
-                    step=step_idx,
-                    elapsed_ms=elapsed_ms,
-                    api_http_status=api_http_status,
-                    status_code=status_code,
-                    blocked=blocked,
-                    html_len=len(html),
-                    api_retry_after=api_retry_after,
-                    scrapfly_headers=scrapfly_headers,
-                    error_code=error_code,
-                    **context,
-                )
-
-                # Success path:
-                # - For 200 responses, return content even if heuristics are "suspicious" and let parsing decide.
-                # - For obvious target errors (403/429) keep failing to enable retries/backoff.
-                if api_http_status < 500 and status_code not in (403, 429) and html:
-                    time.sleep(DELAY_BETWEEN_REQUESTS)
-                    return {
-                        "success": True,
-                        "url": url,
-                        "html": html,
-                        "status_code": status_code or 200,
-                        "api_http_status": api_http_status,
-                        "response": data,
-                        "session_id": self.session_id,
-                        "attempts": attempt,
-                        "policy_step": step_idx,
-                        "params_used": {"country": country, **step},
-                        "elapsed_ms": elapsed_ms,
-                        "blocked_suspected": blocked,
-                        "scrapfly_headers": scrapfly_headers,
-                    }
-
-                # Quota exhausted is usually hard-fail (don't spin)
-                if status_code == 403 and not blocked:
-                    return {
-                        "success": False,
-                        "url": url,
-                        "error": "403 Forbidden - target denied or Scrapfly quota/credits may be exhausted.",
-                        "html": html,
-                        "status_code": 403,
-                        "api_http_status": api_http_status,
-                        "attempts": attempt,
-                        "policy_step": step_idx,
-                        "params_used": {"country": country, **step},
-                        "elapsed_ms": elapsed_ms,
-                        "scrapfly_headers": scrapfly_headers,
-                    }
-
-                # Decide retry/fallback (only for clear transient/denial cases)
-                reason = "blocked" if status_code == 403 else ("rate_limited" if status_code == 429 or api_http_status == 429 else "http_error")
-                last_error = f"{reason} status_code={status_code} api_http_status={api_http_status}"
-                if error_code:
-                    last_error += f" error_code={error_code}"
-                if error_message:
-                    last_error += f" message={error_message}"
-
-                # Make 429 actionable even without INFO logs by including key Scrapfly headers.
-                if reason == "rate_limited" and scrapfly_headers:
-                    conc = scrapfly_headers.get("X-Scrapfly-Account-Concurrent-Usage")
-                    conc_rem = scrapfly_headers.get("X-Scrapfly-Account-Remaining-Concurrent-Usage")
-                    rem_credit = scrapfly_headers.get("X-Scrapfly-Remaining-Api-Credit")
-                    cost = scrapfly_headers.get("X-Scrapfly-Api-Cost")
-                    req_id = scrapfly_headers.get("X-Scrapfly-Request-Id")
-                    last_error += (
-                        f" scrapfly_conc={conc} remaining_conc={conc_rem}"
-                        f" cost={cost} remaining_credit={rem_credit}"
-                        f" request_id={req_id}"
-                    )
-
-            except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                reason = "timeout"
-                last_error = f"{reason}: {str(e)}"
-                self._log(
-                    "scrapfly_request_error",
-                    url=url,
-                    attempt=attempt,
-                    step=step_idx,
-                    reason=reason,
-                    elapsed_ms=elapsed_ms,
-                    **context,
-                )
-            except requests.exceptions.RequestException as e:
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                reason = "request_error"
-                last_error = f"{reason}: {str(e)}"
-                self._log(
-                    "scrapfly_request_error",
-                    url=url,
-                    attempt=attempt,
-                    step=step_idx,
-                    reason=reason,
-                    elapsed_ms=elapsed_ms,
-                    **context,
-                )
-
-            # Retry / backoff / escalate policy
-            if reason == "blocked":
-                if blocked_js_fallback and not blocked_js_fallback_used:
-                    blocked_js_fallback_used = True
-                    self.session_id = None
-                    step_idx = 0
-                    self._log(
-                        "scrapfly_blocked_js_fallback",
-                        url=url,
-                        attempt=attempt,
-                        step=step_idx,
-                        message="Retrying with render_js=true and fresh session after block",
-                        **context,
-                    )
-                else:
-                    step_idx = min(step_idx + 1, len(param_steps) - 1)
-            # For rate limiting, don't waste time escalating params; just wait and retry.
-
-            # Backoff (cap by list length)
-            sleep_s = backoffs[min(attempt - 1, len(backoffs) - 1)]
-            # small jitter to avoid thundering herd
-            sleep_s = sleep_s + random.uniform(0, 0.5)
-
-            # Honor Retry-After if provided/known (Scrapfly API or result)
-            retry_after_s = None
-            try:
-                # Some APIs return "Retry-After" in headers; also handle numeric strings
-                if 'api_retry_after' in locals() and api_retry_after:
-                    retry_after_s = int(float(str(api_retry_after).strip()))
-            except Exception:
-                retry_after_s = None
-            try:
-                # Some Scrapfly responses may include retry hints in JSON
-                if isinstance(data, dict):
-                    ra = data.get("retry_after") or (data.get("result") or {}).get("retry_after")
-                    if ra is not None:
-                        retry_after_s = int(float(str(ra).strip()))
-            except Exception:
-                pass
-
-            if reason == "rate_limited" and retry_after_s:
-                sleep_s = max(sleep_s, retry_after_s)
-            if reason == "rate_limited":
-                rate_limit_backoff_s = float(os.environ.get("SCRAPFLY_RATE_LIMIT_BACKOFF_S", "45"))
-                sleep_s = max(sleep_s, rate_limit_backoff_s)
-
-            sleep_s = min(float(sleep_s), float(max_retry_sleep_s))
-            self._log(
-                "scrapfly_retry_sleep",
-                url=url,
-                attempt=attempt,
-                step=step_idx,
-                reason=reason,
-                sleep_s=round(sleep_s, 2),
-                retry_after_s=retry_after_s,
-                **context,
+            
+            # Use GET request with query parameters
+            response = self.session.get(
+                self.api_url,
+                params=query_params,
+                timeout=REQUEST_TIMEOUT
             )
-            time.sleep(sleep_s)
-
-        return {
-            "success": False,
-            "url": url,
-            "error": last_error or "Failed after retries",
-            "html": "",
-            "status_code": 0,
-            "api_http_status": 0,
-            "attempts": attempt,
-            "policy_step": step_idx,
-        }
+            
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Extract and store session ID from response if available
+            result_data = data.get("result", {})
+            if "session" in result_data and not self.session_id:
+                self.session_id = result_data["session"]
+            
+            # Add delay between requests
+            time.sleep(DELAY_BETWEEN_REQUESTS)
+            
+            return {
+                "success": True,
+                "url": url,
+                "html": result_data.get("content", ""),
+                "status_code": result_data.get("status_code", 200),
+                "response": data,
+                "session_id": self.session_id,  # Return session ID for reuse
+            }
+            
+        except requests.exceptions.HTTPError as e:
+            # Get detailed error message
+            error_detail = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.text
+                    error_detail = f"{str(e)} - Response: {error_body[:500]}"
+                except:
+                    pass
+            
+            # Handle rate limiting (429 errors)
+            if e.response.status_code == 429:
+                retry_after = e.response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait_seconds = int(retry_after)
+                    except ValueError:
+                        wait_seconds = 60  # Default to 60 seconds
+                else:
+                    wait_seconds = 60  # Default wait time
+                
+                return {
+                    "success": False,
+                    "url": url,
+                    "error": f"429 Rate Limit Exceeded. Wait {wait_seconds} seconds before retrying.",
+                    "html": "",
+                    "status_code": 429,
+                    "retry_after": wait_seconds,
+                }
+            
+            # Handle quota exceeded (403 errors)
+            if e.response.status_code == 403:
+                return {
+                    "success": False,
+                    "url": url,
+                    "error": "403 Forbidden - Scrapfly quota/credits may be exhausted. Check your Scrapfly account.",
+                    "html": "",
+                    "status_code": 403,
+                }
+            
+            return {
+                "success": False,
+                "url": url,
+                "error": error_detail,
+                "html": "",
+                "status_code": e.response.status_code if hasattr(e, 'response') and e.response else 0,
+            }
+        except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+            # Timeout exceptions - let retry decorator handle these
+            raise  # Re-raise so @retry decorator can retry
+        except requests.exceptions.RequestException as e:
+            return {
+                "success": False,
+                "url": url,
+                "error": str(e),
+                "html": "",
+                "status_code": 0,
+            }
     
     def scrape_with_headers(self, url: str, headers: Dict = None, **kwargs) -> Dict[str, Any]:
         """
@@ -491,6 +205,4 @@ class ScrapflyClient:
     
     def close(self):
         """Close the session"""
-        sess = getattr(self._local, "session", None)
-        if sess is not None:
-            sess.close()
+        self.session.close()
