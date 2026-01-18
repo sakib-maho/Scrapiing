@@ -14,14 +14,22 @@ SCRAPFLY_API_URL = os.environ.get("SCRAPFLY_API_URL", "https://api.scrapfly.io/s
 GUMTREE_EMAIL = os.environ.get("GUMTREE_EMAIL", "pepeandamino@gmail.com")
 GUMTREE_PASSWORD = os.environ.get("GUMTREE_PASSWORD", "-trust555-")
 
+# Helpers
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
 # Scrapfly API Settings
 SCRAPFLY_CONFIG = {
     "api_key": SCRAPFLY_API_KEY,
     "url": SCRAPFLY_API_URL,
-    "render_js": True,  # Enable JavaScript rendering
+    # Defaults preserve current behavior; Railway env vars can override.
+    "render_js": _env_bool("SCRAPFLY_RENDER_JS_DEFAULT", True),
     "country": "AU",  # Australia for Gumtree
-    "premium_proxy": True,  # Use premium proxies
-    "asp": True,  # Anti-scraping protection
+    "premium_proxy": _env_bool("SCRAPFLY_PREMIUM_PROXY_DEFAULT", True),
+    "asp": _env_bool("SCRAPFLY_ASP_DEFAULT", True),
 }
 
 # Gumtree Base URLs (Australian site only)
@@ -40,10 +48,10 @@ GOOGLE_CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials
 GOOGLE_TOKEN_FILE = os.environ.get("GOOGLE_TOKEN_FILE", "token.json")  # Path to store access token
 
 # Scraping Settings
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
-REQUEST_TIMEOUT = 90  # seconds (increased from 30 to handle slow Scrapfly API responses)
-DELAY_BETWEEN_REQUESTS = 1  # seconds
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+RETRY_DELAY = float(os.environ.get("RETRY_DELAY", "2"))  # seconds
+REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "90"))  # seconds
+DELAY_BETWEEN_REQUESTS = float(os.environ.get("DELAY_BETWEEN_REQUESTS", "1"))  # seconds
 
 # Headers for requests
 DEFAULT_HEADERS = {
