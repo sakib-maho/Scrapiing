@@ -1,6 +1,7 @@
 """
 Scrapfly API Client for Web Scraping
 """
+import os
 import requests
 import time
 import json
