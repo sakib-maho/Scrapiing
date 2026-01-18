@@ -36,6 +36,9 @@ class ScrapflyClient:
         """
         # Extract headers if provided
         custom_headers = kwargs.pop("headers", None)
+        # Internal: allow limited 422 retries (Scrapfly can return 422 for unsupported options on some plans/keys)
+        _retry_422_count = int(kwargs.pop("_retry_422_count", 0))
+        _max_422_retries = int(kwargs.pop("max_422_retries", os.environ.get("SCRAPFLY_422_MAX_RETRIES", "3")))
         
         # Build request payload
         payload = {
@@ -118,6 +121,24 @@ class ScrapflyClient:
                     error_detail = f"{str(e)} - Response: {error_body[:500]}"
                 except:
                     pass
+
+            # Special handling for 422 (unprocessable entity) from Scrapfly API:
+            # Often indicates plan/key doesn't allow certain options (asp/premium_proxy).
+            # Retry a few times with safer params (disable asp/premium_proxy) to avoid hard failure.
+            if hasattr(e, "response") and e.response is not None and e.response.status_code == 422:
+                if _retry_422_count < _max_422_retries:
+                    # Backoff a bit to avoid immediate rejections
+                    time.sleep(2 * (_retry_422_count + 1))
+                    return self.scrape(
+                        url,
+                        headers=custom_headers,
+                        render_js=payload.get("render_js", False),
+                        country=payload.get("country", "AU"),
+                        premium_proxy=False,
+                        asp=False,
+                        _retry_422_count=_retry_422_count + 1,
+                        max_422_retries=_max_422_retries,
+                    )
             
             # Handle rate limiting (429 errors)
             if e.response.status_code == 429:
