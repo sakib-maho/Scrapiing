@@ -1904,7 +1904,32 @@ class GumtreeScraper:
             if get_details:
                 print(f"  Fetching details for {len(page_listings)} listings...")
                 quota_exceeded = False
+                # Hard caps to avoid very long runs when Scrapfly has intermittent gateway timeouts.
+                # - MAX_JOB_DURATION_S: max seconds to spend on detail fetching for this page/job (default 600s).
+                # - MAX_DETAIL_FAILURES: stop fetching further details after too many transient failures (default 8).
+                started_details = time.time()
+                max_job_duration_s = int(os.environ.get("MAX_JOB_DURATION_S", "600"))
+                max_detail_failures = int(os.environ.get("MAX_DETAIL_FAILURES", "8"))
+                detail_failures = 0
                 for i, listing in enumerate(page_listings, 1):
+                    # Stop if we exceed time budget for details
+                    if max_job_duration_s > 0 and (time.time() - started_details) > max_job_duration_s:
+                        print(
+                            f"⚠️  Stopping detail fetch early due to time budget: "
+                            f"elapsed={time.time() - started_details:.1f}s > MAX_JOB_DURATION_S={max_job_duration_s}. "
+                            f"Returning listings with partial details."
+                        )
+                        break
+
+                    # Stop if too many transient failures (prevents retry storms from blowing runtime)
+                    if max_detail_failures > 0 and detail_failures >= max_detail_failures:
+                        print(
+                            f"⚠️  Stopping detail fetch early due to failures: "
+                            f"detail_failures={detail_failures} >= MAX_DETAIL_FAILURES={max_detail_failures}. "
+                            f"Returning listings with partial details."
+                        )
+                        break
+
                     if listing.get("url"):
                         # Skip visiting page if phone already found in description
                         if listing.get("phoneNumberExists") and listing.get("phone"):
@@ -1926,6 +1951,7 @@ class GumtreeScraper:
                                     details["creationDate"] = listing.get("creationDate")
                                 listing.update(details)
                             else:
+                                detail_failures += 1
                                 # Log error but continue with basic listing data
                                 error_msg = details.get("error", "Unknown error")
                                 status_code = details.get("status_code", 0)
@@ -1940,6 +1966,8 @@ class GumtreeScraper:
                                     break
                                 elif status_code == 0 or "timeout" in error_msg.lower():
                                     print(f"    ⚠️  [{i}/{len(page_listings)}] Request failed/timeout - continuing with basic data: {error_msg[:100]}")
+                                elif status_code == 504 or "gateway timeout" in error_msg.lower():
+                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Scrapfly gateway timeout (504) - continuing with basic data: {error_msg[:100]}")
                                 else:
                                     print(f"    ⚠️  [{i}/{len(page_listings)}] Failed to fetch details - continuing with basic data: {error_msg[:100]}")
                             
