@@ -1836,22 +1836,22 @@ class GumtreeScraper:
             
             print(f"Scraping category page {page}: {url}")
 
-            # Retry logic for category page: if we get 0 listings (blocked/empty), retry with backoff
-            # and escalate options (optional JS on last attempt).
-            max_cat_retries = int(os.environ.get("CATEGORY_RETRIES", "3"))
-            backoffs = [5, 10, 20]
+            # Retry logic for category page: if we get 0 listings (blocked/empty), retry with backoff.
+            # Policy: keep render_js=false for the first N-1 attempts, and enable render_js=true only on the last attempt.
+            # Default is 4 attempts -> first 3 JS=false, last JS=true.
+            max_cat_retries = int(os.environ.get("CATEGORY_RETRIES", "4"))
+            backoffs = [5, 10, 20, 40]
             last_error = None
             page_listings = []
             result = None
 
             for attempt in range(max_cat_retries):
                 # Escalation strategy
-                # Attempt 0: use defaults from config
-                # Attempt 1: try with asp/premium if defaults had them off (or keep as-is)
-                # Attempt 2+: enable render_js (often needed when Gumtree serves JS-heavy pages)
                 kwargs = {}
-                if attempt >= 2:
+                if attempt == max_cat_retries - 1:
                     kwargs["render_js"] = True
+                else:
+                    kwargs["render_js"] = False
 
                 result = self.client.scrape_with_headers(
                     url,
