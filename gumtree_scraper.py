@@ -1918,13 +1918,18 @@ class GumtreeScraper:
                 try:
                     _soup = BeautifulSoup(html, "lxml")
                     page_title = (_soup.title.get_text(strip=True) if _soup.title else "")[:120]
+                    canonical = ""
+                    canon = _soup.find("link", rel="canonical")
+                    if canon and canon.get("href"):
+                        canonical = str(canon.get("href"))[:200]
                 except Exception:
                     page_title = ""
+                    canonical = ""
                 print(
                     f"  [category_retry {attempt + 1}/{max_cat_retries}] "
                     f"render_js={kwargs.get('render_js')} success=true "
                     f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
-                    f"s_ad_links={ad_link_count} title={page_title!r}"
+                    f"s_ad_links={ad_link_count} title={page_title!r} canonical={canonical!r}"
                 )
 
                 # Heuristic: if non-JS fetch returns an "empty shell" (no title and no listing links),
@@ -1940,8 +1945,58 @@ class GumtreeScraper:
                         f"  [category_retry] Detected empty-shell HTML (html_len={html_len}, title empty, s_ad_links=0). "
                         f"Jumping directly to JS attempt {max_cat_retries}/{max_cat_retries}."
                     )
+                    # Avoid carrying a potentially "poisoned" session into JS mode.
+                    try:
+                        self.client.session_id = None
+                    except Exception:
+                        pass
                     attempt = max_cat_retries - 1
                     continue
+
+                # If we are in JS mode but still got no listing links and a suspicious title (homepage/redirect),
+                # retry once with cache_clear and a fresh session.
+                if (
+                    kwargs.get("render_js")
+                    and ad_link_count == 0
+                    and attempt == max_cat_retries - 1
+                    and page_title in ("www.gumtree.com.au", "Gumtree", "")
+                    and not kwargs.get("_js_retry_once")
+                ):
+                    print(
+                        "  [category_retry] JS mode returned 0 listing links with suspicious title; "
+                        "retrying once with cache_clear and fresh session."
+                    )
+                    try:
+                        self.client.session_id = None
+                    except Exception:
+                        pass
+                    attempt_started = time.time()
+                    result = self.client.scrape_with_headers(
+                        url,
+                        headers=self.config["headers"],
+                        render_js=True,
+                        cache=False,
+                        cache_clear=True,
+                        _js_retry_once=True,
+                    )
+                    html = result.get("html") or ""
+                    html_len = len(html)
+                    ad_link_count = html.count("/s-ad/")
+                    try:
+                        _soup = BeautifulSoup(html, "lxml")
+                        page_title = (_soup.title.get_text(strip=True) if _soup.title else "")[:120]
+                        canonical = ""
+                        canon = _soup.find("link", rel="canonical")
+                        if canon and canon.get("href"):
+                            canonical = str(canon.get("href"))[:200]
+                    except Exception:
+                        page_title = ""
+                        canonical = ""
+                    print(
+                        f"  [category_retry js_cache_clear] render_js=True success={bool(result.get('success'))} "
+                        f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
+                        f"s_ad_links={ad_link_count} title={page_title!r} canonical={canonical!r}"
+                    )
 
                 # If html is empty, treat like failure and retry
                 if not html.strip():

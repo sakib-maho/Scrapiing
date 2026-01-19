@@ -74,6 +74,18 @@ class ScrapflyClient:
                 "premium_proxy": "true" if payload["premium_proxy"] else "false",
                 "asp": "true" if payload["asp"] else "false",
             }
+
+            # Include any additional Scrapfly parameters (e.g., cache, cache_clear, etc.)
+            # NOTE: headers are handled separately via headers[Header-Name] params.
+            for k, v in payload.items():
+                if k in ("url", "render_js", "country", "premium_proxy", "asp", "headers"):
+                    continue
+                if isinstance(v, bool):
+                    query_params[k] = "true" if v else "false"
+                elif v is None:
+                    continue
+                else:
+                    query_params[k] = str(v)
             
             if self.session_id:
                 query_params["session"] = self.session_id
