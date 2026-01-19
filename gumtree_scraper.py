@@ -1882,7 +1882,8 @@ class GumtreeScraper:
             page_listings = []
             result = None
 
-            for attempt in range(max_cat_retries):
+            attempt = 0
+            while attempt < max_cat_retries:
                 # Escalation strategy
                 kwargs = {}
                 if attempt == max_cat_retries - 1:
@@ -1907,6 +1908,7 @@ class GumtreeScraper:
                     # Wait and retry
                     if attempt < max_cat_retries - 1:
                         time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
+                        attempt += 1
                         continue
                     break
 
@@ -1924,11 +1926,29 @@ class GumtreeScraper:
                     f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
                     f"s_ad_links={ad_link_count} title={page_title!r}"
                 )
+
+                # Heuristic: if non-JS fetch returns an "empty shell" (no title and no listing links),
+                # skip remaining non-JS attempts and jump directly to the final JS attempt.
+                if (
+                    not kwargs.get("render_js")
+                    and ad_link_count == 0
+                    and not page_title
+                    and html_len < int(os.environ.get("CATEGORY_EMPTY_SHELL_MAX_HTML_LEN", "80000"))
+                    and attempt < max_cat_retries - 1
+                ):
+                    print(
+                        f"  [category_retry] Detected empty-shell HTML (html_len={html_len}, title empty, s_ad_links=0). "
+                        f"Jumping directly to JS attempt {max_cat_retries}/{max_cat_retries}."
+                    )
+                    attempt = max_cat_retries - 1
+                    continue
+
                 # If html is empty, treat like failure and retry
                 if not html.strip():
                     last_error = "empty_html"
                     if attempt < max_cat_retries - 1:
                         time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
+                        attempt += 1
                         continue
                     break
 
@@ -1942,6 +1962,9 @@ class GumtreeScraper:
                     self._save_html_for_debug(html, url)
                 if attempt < max_cat_retries - 1:
                     time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
+                    attempt += 1
+                    continue
+                break
 
             if not page_listings:
                 # Preserve old behavior: print failure and move on (or break below if needed)
