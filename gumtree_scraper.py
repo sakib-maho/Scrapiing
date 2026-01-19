@@ -8,6 +8,7 @@ import time
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode, urlparse, urlunparse
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import pytz
 import requests
 from bs4 import BeautifulSoup
@@ -30,6 +31,27 @@ class GumtreeScraper:
         self.client = ScrapflyClient()
         self.gumtree_config = self.config["gumtree"]
         self.is_australian = True  # Always Australian site
+        # Detail fetch concurrency (defaults to 1 for stability)
+        self.detail_concurrency = int(os.environ.get("SCRAPE_CONCURRENCY", "1"))
+
+    def _dedupe_listings(self, listings: List[Dict]) -> List[Dict]:
+        """
+        Deduplicate listings by job_id (preferred) or URL.
+        Preserves first-seen order.
+        """
+        seen = set()
+        out: List[Dict] = []
+        for item in listings or []:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("job_id") or item.get("url")
+            if not key:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+        return out
     
     def _normalize_url(self, href: str, base_url: str = None) -> str:
         """
@@ -376,6 +398,21 @@ class GumtreeScraper:
         soup = BeautifulSoup(html, "lxml")
         listings = []
         
+        # Prefer the main results collection (more reliable than generic selectors and reduces noise).
+        # Gumtree AU jobs pages commonly have:
+        #   <section class="search-results-page__user-ad-collection"> ... <a href="/s-ad/.../123"> ... </a>
+        results_root = soup.select_one("section.search-results-page__user-ad-collection")
+        if results_root:
+            listing_links = results_root.find_all("a", href=re.compile(r"/s-ad/"))
+            for link in listing_links:
+                href = link.get("href", "")
+                if "p-post-ad" in href or "post-ad" in href.lower() or "login" in href.lower():
+                    continue
+                listing_data = self._extract_listing_from_link(link, soup)
+                if listing_data:
+                    listings.append(listing_data)
+            return listings
+
         # Find listing containers (Gumtree structure may vary)
         # Common selectors for listings
         listing_selectors = [
@@ -1921,6 +1958,9 @@ class GumtreeScraper:
                 if remaining <= 0:
                     break
                 page_listings = page_listings[:remaining]
+
+            # Dedupe before fetching details (jobs pages often contain duplicates like TOP + MAIN rows)
+            page_listings = self._dedupe_listings(page_listings)
             
             # Get detailed information for each listing if requested
             if get_details:
@@ -1933,67 +1973,125 @@ class GumtreeScraper:
                 max_job_duration_s = int(os.environ.get("MAX_JOB_DURATION_S", "600"))
                 max_detail_failures = int(os.environ.get("MAX_DETAIL_FAILURES", "8"))
                 detail_failures = 0
-                for i, listing in enumerate(page_listings, 1):
-                    # Stop if we exceed time budget for details
+                def _should_stop_details() -> bool:
                     if max_job_duration_s > 0 and (time.time() - started_details) > max_job_duration_s:
                         print(
                             f"⚠️  Stopping detail fetch early due to time budget: "
                             f"elapsed={time.time() - started_details:.1f}s > MAX_JOB_DURATION_S={max_job_duration_s}. "
                             f"Returning listings with partial details."
                         )
-                        break
-
-                    # Stop if too many transient failures (prevents retry storms from blowing runtime)
+                        return True
                     if max_detail_failures > 0 and detail_failures >= max_detail_failures:
                         print(
                             f"⚠️  Stopping detail fetch early due to failures: "
                             f"detail_failures={detail_failures} >= MAX_DETAIL_FAILURES={max_detail_failures}. "
                             f"Returning listings with partial details."
                         )
-                        break
+                        return True
+                    return False
 
-                    if listing.get("url"):
-                        # Skip visiting page if phone already found in description
-                        if listing.get("phoneNumberExists") and listing.get("phone"):
-                            print(f"    [{i}/{len(page_listings)}] Phone found in description, skipping page visit: {listing.get('url', '')[:60]}...")
-                        else:
+                def _handle_details_result(listing: Dict, idx1: int, details: Dict):
+                    nonlocal detail_failures, quota_exceeded
+                    if details.get("success"):
+                        # Merge details with listing data (phone from description takes priority)
+                        if listing.get("phone"):
+                            details["phone"] = listing.get("phone")
+                            details["phoneNumberExists"] = True
+                            # Add phone reveal URL if we have job_id
+                            job_id = listing.get("job_id") or details.get("job_id")
+                            if job_id:
+                                details["phoneRevealUrl"] = f"https://gt-api.gumtree.com.au/web/vip/reveal-phone-number?adId={job_id}"
+                        # Preserve creationDate from search results if detail page doesn't have it
+                        if listing.get("creationDate") and not details.get("creationDate"):
+                            details["creationDate"] = listing.get("creationDate")
+                        listing.update(details)
+                        return
+
+                    detail_failures += 1
+                    error_msg = details.get("error", "Unknown error")
+                    status_code = details.get("status_code", 0)
+
+                    if status_code == 429:
+                        print(f"    ⚠️  [{idx1}/{len(page_listings)}] Rate limit (429) - continuing with basic data")
+                    elif status_code == 403:
+                        print(f"    ❌ [{idx1}/{len(page_listings)}] Scrapfly quota exceeded (403) - stopping scraping")
+                        print(f"    Error: {error_msg}")
+                        quota_exceeded = True
+                    elif status_code == 0 or "timeout" in str(error_msg).lower():
+                        print(f"    ⚠️  [{idx1}/{len(page_listings)}] Request failed/timeout - continuing with basic data: {str(error_msg)[:100]}")
+                    elif status_code == 504 or "gateway timeout" in str(error_msg).lower():
+                        print(f"    ⚠️  [{idx1}/{len(page_listings)}] Scrapfly gateway timeout (504) - continuing with basic data: {str(error_msg)[:100]}")
+                    else:
+                        print(f"    ⚠️  [{idx1}/{len(page_listings)}] Failed to fetch details - continuing with basic data: {str(error_msg)[:100]}")
+
+                # Controlled parallel detail fetching
+                if self.detail_concurrency <= 1:
+                    for i, listing in enumerate(page_listings, 1):
+                        if _should_stop_details() or quota_exceeded:
+                            break
+                        if listing.get("url"):
+                            if listing.get("phoneNumberExists") and listing.get("phone"):
+                                print(f"    [{i}/{len(page_listings)}] Phone found in description, skipping page visit: {listing.get('url', '')[:60]}...")
+                                continue
                             print(f"    [{i}/{len(page_listings)}] Fetching: {listing.get('url', '')[:60]}...")
                             details = self.get_listing_details(listing["url"])
-                            if details.get("success"):
-                                # Merge details with listing data (phone from description takes priority)
-                                if listing.get("phone"):
-                                    details["phone"] = listing.get("phone")
-                                    details["phoneNumberExists"] = True
-                                    # Add phone reveal URL if we have job_id
-                                    job_id = listing.get("job_id") or details.get("job_id")
-                                    if job_id:
-                                        details["phoneRevealUrl"] = f"https://gt-api.gumtree.com.au/web/vip/reveal-phone-number?adId={job_id}"
-                                # Preserve creationDate from search results if detail page doesn't have it
-                                if listing.get("creationDate") and not details.get("creationDate"):
-                                    details["creationDate"] = listing.get("creationDate")
-                                listing.update(details)
-                            else:
-                                detail_failures += 1
-                                # Log error but continue with basic listing data
-                                error_msg = details.get("error", "Unknown error")
-                                status_code = details.get("status_code", 0)
-                                
-                                # Check for Scrapfly quota/rate limit errors
-                                if status_code == 429:
-                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Rate limit (429) - continuing with basic data")
-                                elif status_code == 403:
-                                    print(f"    ❌ [{i}/{len(page_listings)}] Scrapfly quota exceeded (403) - stopping scraping")
-                                    print(f"    Error: {error_msg}")
-                                    quota_exceeded = True
+                            _handle_details_result(listing, i, details)
+                            if quota_exceeded:
+                                break
+                            time.sleep(self.config["scraping"]["delay"] * 0.5)
+                else:
+                    to_fetch = []
+                    for idx0, listing in enumerate(page_listings):
+                        if not listing.get("url"):
+                            continue
+                        if listing.get("phoneNumberExists") and listing.get("phone"):
+                            print(f"    [{idx0 + 1}/{len(page_listings)}] Phone found in description, skipping page visit: {listing.get('url', '')[:60]}...")
+                            continue
+                        to_fetch.append(idx0)
+
+                    if to_fetch:
+                        workers = max(1, min(self.detail_concurrency, 5))
+                        with ThreadPoolExecutor(max_workers=workers) as executor:
+                            futures = {}
+                            cursor = 0
+
+                            def _submit_one(idx0: int):
+                                listing = page_listings[idx0]
+                                idx1 = idx0 + 1
+                                print(f"    [{idx1}/{len(page_listings)}] Fetching: {listing.get('url', '')[:60]}...")
+                                fut = executor.submit(self.get_listing_details, listing["url"])
+                                futures[fut] = idx0
+
+                            # Prime executor
+                            while cursor < len(to_fetch) and len(futures) < workers and not _should_stop_details() and not quota_exceeded:
+                                _submit_one(to_fetch[cursor])
+                                cursor += 1
+
+                            while futures:
+                                if _should_stop_details() or quota_exceeded:
+                                    # Cancel pending futures if possible
+                                    for fut in list(futures.keys()):
+                                        fut.cancel()
                                     break
-                                elif status_code == 0 or "timeout" in error_msg.lower():
-                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Request failed/timeout - continuing with basic data: {error_msg[:100]}")
-                                elif status_code == 504 or "gateway timeout" in error_msg.lower():
-                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Scrapfly gateway timeout (504) - continuing with basic data: {error_msg[:100]}")
-                                else:
-                                    print(f"    ⚠️  [{i}/{len(page_listings)}] Failed to fetch details - continuing with basic data: {error_msg[:100]}")
-                            
-                            time.sleep(self.config["scraping"]["delay"] * 0.5)  # Shorter delay for details
+
+                                done, _ = wait(set(futures.keys()), timeout=1, return_when=FIRST_COMPLETED)
+                                if not done:
+                                    continue
+
+                                for fut in done:
+                                    idx0 = futures.pop(fut)
+                                    listing = page_listings[idx0]
+                                    idx1 = idx0 + 1
+                                    try:
+                                        details = fut.result()
+                                    except Exception as exc:
+                                        details = {"success": False, "error": str(exc), "status_code": 0}
+                                    _handle_details_result(listing, idx1, details)
+
+                                    # Fill the gap
+                                    while cursor < len(to_fetch) and len(futures) < workers and not _should_stop_details() and not quota_exceeded:
+                                        _submit_one(to_fetch[cursor])
+                                        cursor += 1
                 
                 # Stop scraping if quota exceeded
                 if quota_exceeded:
