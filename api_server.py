@@ -16,12 +16,45 @@ import threading
 import time
 import uuid
 import requests
+import queue
+import hashlib
 
 # Australian timezone
 AUSTRALIA_TZ = pytz.timezone('Australia/Sydney')
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests from n8n.cloud
+
+# --- Single-worker job queue + request dedupe (prevents overlapping scrapes) ---
+JOB_QUEUE: "queue.Queue[tuple[str, dict]]" = queue.Queue()
+_WORKER_STARTED = False
+_WORKER_LOCK = threading.Lock()
+_RECENT_SIG_TO_JOB = {}  # signature -> (job_id, ts)
+_RECENT_SIG_TTL_S = int(os.environ.get("JOB_DEDUP_TTL_S", "300"))
+
+
+def _params_signature(params: dict) -> str:
+    payload = json.dumps(params, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _ensure_worker():
+    global _WORKER_STARTED
+    with _WORKER_LOCK:
+        if _WORKER_STARTED:
+            return
+
+        def _worker_loop():
+            while True:
+                job_id, params = JOB_QUEUE.get()
+                try:
+                    run_job_and_callback(job_id, params)
+                finally:
+                    JOB_QUEUE.task_done()
+
+        t = threading.Thread(target=_worker_loop, daemon=True)
+        t.start()
+        _WORKER_STARTED = True
 
 def _normalize_location(raw_location):
     if raw_location is None or raw_location == "None" or raw_location == "null":
@@ -182,19 +215,31 @@ def scrape():
     try:
         data = request.get_json() or {}
         params = _parse_scrape_params(data)
-        job_id = str(uuid.uuid4())
 
-        thread = threading.Thread(
-            target=run_job_and_callback,
-            args=(job_id, params),
-            daemon=True
-        )
-        thread.start()
+        # Ensure background worker exists
+        _ensure_worker()
+
+        # Deduplicate identical requests arriving close together (n8n retries/double triggers)
+        sig = _params_signature(params)
+        now = time.time()
+        existing = _RECENT_SIG_TO_JOB.get(sig)
+        if existing and (now - existing[1]) <= _RECENT_SIG_TTL_S:
+            job_id = existing[0]
+            return jsonify({
+                "success": True,
+                "jobId": job_id,
+                "status": "deduped"
+            }), 200
+
+        job_id = str(uuid.uuid4())
+        _RECENT_SIG_TO_JOB[sig] = (job_id, now)
+        JOB_QUEUE.put((job_id, params))
 
         return jsonify({
             "success": True,
             "jobId": job_id,
-            "status": "started"
+            "status": "queued",
+            "queueSize": JOB_QUEUE.qsize()
         }), 200
     except Exception as e:
         return jsonify({
