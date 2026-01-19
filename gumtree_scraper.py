@@ -1853,6 +1853,7 @@ class GumtreeScraper:
                 else:
                     kwargs["render_js"] = False
 
+                attempt_started = time.time()
                 result = self.client.scrape_with_headers(
                     url,
                     headers=self.config["headers"],
@@ -1861,6 +1862,11 @@ class GumtreeScraper:
 
                 if not result.get("success"):
                     last_error = result.get("error", "Unknown error")
+                    print(
+                        f"  [category_retry {attempt + 1}/{max_cat_retries}] "
+                        f"render_js={kwargs.get('render_js')} success=false "
+                        f"elapsed={time.time() - attempt_started:.2f}s error={str(last_error)[:160]}"
+                    )
                     # Wait and retry
                     if attempt < max_cat_retries - 1:
                         time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
@@ -1868,6 +1874,19 @@ class GumtreeScraper:
                     break
 
                 html = result.get("html") or ""
+                html_len = len(html)
+                ad_link_count = html.count("/s-ad/")
+                try:
+                    _soup = BeautifulSoup(html, "lxml")
+                    page_title = (_soup.title.get_text(strip=True) if _soup.title else "")[:120]
+                except Exception:
+                    page_title = ""
+                print(
+                    f"  [category_retry {attempt + 1}/{max_cat_retries}] "
+                    f"render_js={kwargs.get('render_js')} success=true "
+                    f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
+                    f"s_ad_links={ad_link_count} title={page_title!r}"
+                )
                 # If html is empty, treat like failure and retry
                 if not html.strip():
                     last_error = "empty_html"
@@ -1881,6 +1900,9 @@ class GumtreeScraper:
                     break
 
                 last_error = "parsed_0_listings"
+                # Save final HTML for debugging when we cannot parse listings
+                if attempt == max_cat_retries - 1:
+                    self._save_html_for_debug(html, url)
                 if attempt < max_cat_retries - 1:
                     time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
 
@@ -1889,7 +1911,7 @@ class GumtreeScraper:
                 if result and not result.get("success"):
                     error_msg = result.get("error", "Unknown error")
                 else:
-                    error_msg = last_error or "No listings found"
+                    error_msg = (last_error or "No listings found") + f" (attempts={max_cat_retries})"
                 print(f"Failed to scrape page {page}: {error_msg}")
                 continue
             
