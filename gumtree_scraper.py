@@ -1835,18 +1835,63 @@ class GumtreeScraper:
                 url = f"{url}?{query_string}"
             
             print(f"Scraping category page {page}: {url}")
-            
-            result = self.client.scrape_with_headers(
-                url,
-                headers=self.config["headers"]
-            )
-            
-            if not result["success"]:
-                error_msg = result.get('error', 'Unknown error')
+
+            # Retry logic for category page: if we get 0 listings (blocked/empty), retry with backoff
+            # and escalate options (optional JS on last attempt).
+            max_cat_retries = int(os.environ.get("CATEGORY_RETRIES", "3"))
+            backoffs = [5, 10, 20]
+            last_error = None
+            page_listings = []
+            result = None
+
+            for attempt in range(max_cat_retries):
+                # Escalation strategy
+                # Attempt 0: use defaults from config
+                # Attempt 1: try with asp/premium if defaults had them off (or keep as-is)
+                # Attempt 2+: enable render_js (often needed when Gumtree serves JS-heavy pages)
+                kwargs = {}
+                if attempt >= 2:
+                    kwargs["render_js"] = True
+
+                result = self.client.scrape_with_headers(
+                    url,
+                    headers=self.config["headers"],
+                    **kwargs,
+                )
+
+                if not result.get("success"):
+                    last_error = result.get("error", "Unknown error")
+                    # Wait and retry
+                    if attempt < max_cat_retries - 1:
+                        time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
+                        continue
+                    break
+
+                html = result.get("html") or ""
+                # If html is empty, treat like failure and retry
+                if not html.strip():
+                    last_error = "empty_html"
+                    if attempt < max_cat_retries - 1:
+                        time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
+                        continue
+                    break
+
+                page_listings = self._parse_listings_page(html, url)
+                if page_listings:
+                    break
+
+                last_error = "parsed_0_listings"
+                if attempt < max_cat_retries - 1:
+                    time.sleep(backoffs[min(attempt, len(backoffs) - 1)])
+
+            if not page_listings:
+                # Preserve old behavior: print failure and move on (or break below if needed)
+                if result and not result.get("success"):
+                    error_msg = result.get("error", "Unknown error")
+                else:
+                    error_msg = last_error or "No listings found"
                 print(f"Failed to scrape page {page}: {error_msg}")
                 continue
-            
-            page_listings = self._parse_listings_page(result["html"], url)
             
             # Limit page_listings if max_listings is set
             if max_listings:
