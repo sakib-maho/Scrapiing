@@ -29,6 +29,7 @@ CORS(app)  # Allow cross-origin requests from n8n.cloud
 JOB_QUEUE: "queue.Queue[tuple[str, dict]]" = queue.Queue()
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
+_WORKER_THREAD: "threading.Thread | None" = None
 _RECENT_SIG_TO_JOB = {}  # signature -> (job_id, ts)
 _RECENT_SIG_TTL_S = int(os.environ.get("JOB_DEDUP_TTL_S", "300"))
 
@@ -39,21 +40,27 @@ def _params_signature(params: dict) -> str:
 
 
 def _ensure_worker():
-    global _WORKER_STARTED
+    global _WORKER_STARTED, _WORKER_THREAD
     with _WORKER_LOCK:
-        if _WORKER_STARTED:
+        # If we already started a worker thread and it's still alive, we're good.
+        if _WORKER_STARTED and _WORKER_THREAD is not None and _WORKER_THREAD.is_alive():
             return
 
         def _worker_loop():
             while True:
                 job_id, params = JOB_QUEUE.get()
                 try:
-                    run_job_and_callback(job_id, params)
+                    try:
+                        run_job_and_callback(job_id, params)
+                    except Exception:
+                        # Never let the worker thread die; log and keep processing future jobs.
+                        print("❌ Worker job crashed (unhandled). Continuing.")
+                        print(traceback.format_exc())
                 finally:
                     JOB_QUEUE.task_done()
 
-        t = threading.Thread(target=_worker_loop, daemon=True)
-        t.start()
+        _WORKER_THREAD = threading.Thread(target=_worker_loop, daemon=True)
+        _WORKER_THREAD.start()
         _WORKER_STARTED = True
 
 def _normalize_location(raw_location):
@@ -121,11 +128,14 @@ def run_job_and_callback(job_id, params):
     print(f"🚀 Job started. jobId={job_id}")
     sys.stdout.flush()
 
-    scraper = GumtreeScraper()
-    data_handler = DataHandler()
+    scraper = None
+    data_handler = None
     secret = os.environ.get("N8N_WEBHOOK_SECRET", "")
 
     try:
+        scraper = GumtreeScraper()
+        data_handler = DataHandler()
+
         listings = scraper.scrape_category(
             category=params["category_url"],
             location=params["location"],
@@ -187,7 +197,8 @@ def run_job_and_callback(job_id, params):
         _post_callback(payload)
     finally:
         try:
-            scraper.close()
+            if scraper is not None:
+                scraper.close()
         except Exception:
             pass
         elapsed = time.time() - start_time
