@@ -1970,33 +1970,42 @@ class GumtreeScraper:
                         self.client.session_id = None
                     except Exception:
                         pass
-                    attempt_started = time.time()
-                    result = self.client.scrape_with_headers(
-                        url,
-                        headers=self.config["headers"],
-                        render_js=True,
-                        cache=False,
-                        cache_clear=True,
-                        _js_retry_once=True,
-                    )
-                    html = result.get("html") or ""
-                    html_len = len(html)
-                    ad_link_count = html.count("/s-ad/")
-                    try:
-                        _soup = BeautifulSoup(html, "lxml")
-                        page_title = (_soup.title.get_text(strip=True) if _soup.title else "")[:120]
-                        canonical = ""
-                        canon = _soup.find("link", rel="canonical")
-                        if canon and canon.get("href"):
-                            canonical = str(canon.get("href"))[:200]
-                    except Exception:
-                        page_title = ""
-                        canonical = ""
-                    print(
-                        f"  [category_retry js_cache_clear] render_js=True success={bool(result.get('success'))} "
-                        f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
-                        f"s_ad_links={ad_link_count} title={page_title!r} canonical={canonical!r}"
-                    )
+                    js_empty_retries = int(os.environ.get("CATEGORY_JS_EMPTY_RETRIES", "2"))
+                    js_retry_backoff_s = float(os.environ.get("CATEGORY_JS_EMPTY_RETRY_BACKOFF_S", "2"))
+                    for js_try in range(js_empty_retries):
+                        attempt_started = time.time()
+                        result = self.client.scrape_with_headers(
+                            url,
+                            headers=self.config["headers"],
+                            render_js=True,
+                            cache=False,
+                            cache_clear=True,
+                            _js_retry_once=True,
+                        )
+                        html = result.get("html") or ""
+                        html_len = len(html)
+                        ad_link_count = html.count("/s-ad/")
+                        try:
+                            _soup = BeautifulSoup(html, "lxml")
+                            page_title = (_soup.title.get_text(strip=True) if _soup.title else "")[:120]
+                            canonical = ""
+                            canon = _soup.find("link", rel="canonical")
+                            if canon and canon.get("href"):
+                                canonical = str(canon.get("href"))[:200]
+                        except Exception:
+                            page_title = ""
+                            canonical = ""
+                        print(
+                            f"  [category_retry js_cache_clear {js_try + 1}/{js_empty_retries}] render_js=True success={bool(result.get('success'))} "
+                            f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
+                            f"s_ad_links={ad_link_count} title={page_title!r} canonical={canonical!r}"
+                        )
+                        # If we got non-empty HTML, proceed with normal parsing.
+                        if html.strip():
+                            break
+                        # Otherwise wait briefly and retry (transient Scrapfly empty content)
+                        if js_try < js_empty_retries - 1:
+                            time.sleep(js_retry_backoff_s)
 
                 # If html is empty, treat like failure and retry
                 if not html.strip():
