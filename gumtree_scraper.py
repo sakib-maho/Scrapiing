@@ -112,6 +112,65 @@ class GumtreeScraper:
             return base + href
         
         return f"{base}/{href}"
+
+    def _extract_clean_title_from_link(self, link) -> str:
+        """
+        Extract a clean, human title from a Gumtree SRP <a href="/s-ad/..."> element.
+        Avoids using link.get_text() directly because Gumtree often nests snippet/attributes inside the <a>.
+        """
+        if not link:
+            return ""
+
+        # 1) Preferred: explicit title span used on the "new design" SRP.
+        try:
+            t = link.select_one(".user-ad-row-new-design-lite__title-span")
+            if t:
+                txt = t.get_text(" ", strip=True)
+                if txt:
+                    return txt
+        except Exception:
+            pass
+
+        # 2) Fallback: other title-like elements within the link
+        try:
+            title_elem = link.find(["h1", "h2", "h3", "p", "span", "div"], class_=re.compile(r"title|heading", re.I))
+            if title_elem:
+                txt = title_elem.get_text(" ", strip=True)
+                if txt and len(txt) <= 200:
+                    return txt
+        except Exception:
+            pass
+
+        # 3) Fallback: parse aria-label (usually: "<Title>. Price: ... . Location: ... . Ad listed ...")
+        aria = ""
+        try:
+            aria = (link.get("aria-label") or "").strip()
+        except Exception:
+            aria = ""
+        if aria:
+            # Split at common separators.
+            for sep in (". Price:", " Price:", ". Location:", " Location:"):
+                if sep in aria:
+                    aria = aria.split(sep, 1)[0].strip()
+                    break
+            # Remove "Top" prefix if present in aria title part
+            aria = re.sub(r"^\s*Top\s+", "", aria, flags=re.I).strip()
+            if aria:
+                return aria[:200]
+
+        # 4) Last resort: extremely conservative use of link text (trim + sanity filter)
+        txt = ""
+        try:
+            txt = link.get_text(" ", strip=True)
+        except Exception:
+            txt = ""
+        if not txt:
+            return ""
+        # If the text looks contaminated (contains attribute labels or is very long), refuse it.
+        bad_markers = ("Hourly Rate", "Full-time", "Part-time", "Casual", "Contract", "Per Task", "Annual Salary")
+        if len(txt) > 200 or any(m.lower() in txt.lower() for m in bad_markers):
+            return ""
+        return txt[:200]
     
     def _convert_to_exact_date(self, date_str: str) -> Optional[str]:
         """
@@ -514,18 +573,38 @@ class GumtreeScraper:
             
             job_id = id_match.group(1)
             
-            # Try to find title
-            title = link.get_text(strip=True)
+            # Find the listing container (parent or grandparent of the link)
+            listing_container = link.find_parent(["article", "div", "li", "section"])
+            if not listing_container:
+                listing_container = link.parent
+
+            # Title: MUST be clean (never use full <a> text on Gumtree SRP)
+            title = self._extract_clean_title_from_link(link)
             if not title:
-                title_elem = link.find(["h2", "h3", "span", "div"], class_=re.compile(r"title|heading", re.I))
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
+                # As a last resort, try a title-ish element in the container
+                try:
+                    t2 = listing_container.select_one(".user-ad-row-new-design-lite__title-span") if listing_container else None
+                    if t2:
+                        title = t2.get_text(" ", strip=True)
+                except Exception:
+                    pass
             
-            # Try to find location from nearby elements
+            # Location: only look inside this listing container (avoid jumping to another listing)
             location = None
-            location_elem = link.find_next(["span", "div"], class_=re.compile(r"location|area|suburb", re.I))
-            if location_elem:
-                location = location_elem.get_text(strip=True)
+            try:
+                if listing_container:
+                    # New design often has "Suburb, NSW" + age in the same line
+                    loc_age = listing_container.select_one(".user-ad-row-new-design-lite-loc-age")
+                    if loc_age:
+                        location = loc_age.get_text(" ", strip=True)
+                        # Strip trailing age like "1h", "12h"
+                        location = re.sub(r"\s+\d+\s*[hm]$", "", location, flags=re.I).strip()
+                    if not location:
+                        location_elem = listing_container.find(["span", "div"], class_=re.compile(r"location|area|suburb", re.I))
+                        if location_elem:
+                            location = location_elem.get_text(" ", strip=True)
+            except Exception:
+                pass
             
             # Try to find category from URL
             category_name = None
@@ -537,11 +616,6 @@ class GumtreeScraper:
             
             # Extract creation date from search results page
             creation_date = None
-            
-            # Find the listing container (parent or grandparent of the link)
-            listing_container = link.find_parent(["article", "div", "li", "section"])
-            if not listing_container:
-                listing_container = link.parent
             
             # First, try to find the specific Gumtree class: user-ad-row-new-design__age
             # Search within the listing container first
@@ -612,11 +686,22 @@ class GumtreeScraper:
             if creation_date:
                 exact_date = self._convert_to_exact_date(creation_date)
             
-            # Try to find description snippet from nearby elements
+            # Description snippet: only within this listing container.
+            # Note: detail page description is authoritative; this is just a preview.
             description = None
-            desc_elem = link.find_next(["p", "div", "span"], class_=re.compile(r"description|snippet|summary", re.I))
-            if desc_elem:
-                description = desc_elem.get_text(strip=True)
+            try:
+                if listing_container:
+                    # New design has a description container with id user-ad-desc-...
+                    desc_elem = listing_container.find(id=re.compile(r"^user-ad-desc-", re.I))
+                    if not desc_elem:
+                        desc_elem = listing_container.find(["p", "div", "span"], class_=re.compile(r"description|snippet|summary", re.I))
+                    if desc_elem:
+                        description = desc_elem.get_text("\n", strip=True)
+                        # Avoid accidental contamination (attributes glued into description)
+                        if description and len(description) > 2000:
+                            description = description[:2000]
+            except Exception:
+                description = None
             
             # Check if phone number is in description
             phone = None
