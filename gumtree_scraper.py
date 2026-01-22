@@ -34,17 +34,54 @@ class GumtreeScraper:
         # Detail fetch concurrency (defaults to 1 for stability)
         self.detail_concurrency = int(os.environ.get("SCRAPE_CONCURRENCY", "1"))
 
+    def _canonicalize_url_for_dedupe(self, url: str) -> str:
+        """
+        Canonicalize a Gumtree listing URL for dedupe purposes.
+        Strips query/fragment and normalizes scheme/host casing.
+        """
+        if not url:
+            return ""
+        try:
+            p = urlparse(url)
+            # If someone passed a relative URL, just return as-is (caller should normalize first).
+            if not p.scheme or not p.netloc:
+                return url
+            # Drop query + fragment; keep path
+            clean = p._replace(query="", fragment="")
+            # Lowercase scheme/netloc for stable keys
+            clean = clean._replace(scheme=clean.scheme.lower(), netloc=clean.netloc.lower())
+            return urlunparse(clean).rstrip("/")
+        except Exception:
+            return url.rstrip("/")
+
+    def _listing_dedupe_key(self, item: Dict) -> str:
+        """
+        Build a stable dedupe key.
+        Prefer numeric job_id; fall back to extracting it from URL; last resort is canonicalized URL.
+        """
+        if not isinstance(item, dict):
+            return ""
+        job_id = item.get("job_id")
+        if job_id:
+            return f"id:{job_id}"
+        url = item.get("url") or ""
+        m = re.search(r"/(\d+)$", url)
+        if m:
+            return f"id:{m.group(1)}"
+        cu = self._canonicalize_url_for_dedupe(url)
+        return f"url:{cu}" if cu else ""
+
     def _dedupe_listings(self, listings: List[Dict]) -> List[Dict]:
         """
-        Deduplicate listings by job_id (preferred) or URL.
+        Deduplicate listings by numeric ad id (preferred) or canonicalized URL.
         Preserves first-seen order.
         """
-        seen = set()
+        seen: set[str] = set()
         out: List[Dict] = []
         for item in listings or []:
             if not isinstance(item, dict):
                 continue
-            key = item.get("job_id") or item.get("url")
+            key = self._listing_dedupe_key(item)
             if not key:
                 continue
             if key in seen:
@@ -1828,6 +1865,8 @@ class GumtreeScraper:
         base_path = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
         
         listings = []
+        # Global dedupe across pagination within a single job run.
+        seen_global: set[str] = set()
         
         for page in range(1, max_pages + 1):
             # Stop if we've reached the max_listings limit
@@ -2046,8 +2085,23 @@ class GumtreeScraper:
                     break
                 page_listings = page_listings[:remaining]
 
-            # Dedupe before fetching details (jobs pages often contain duplicates like TOP + MAIN rows)
+            # Dedupe within the page and across pages before fetching details.
+            before_page = len(page_listings)
             page_listings = self._dedupe_listings(page_listings)
+            # Cross-page filtering (prevents duplicate detail fetches for "Top" ads repeated on page 1/2, etc.)
+            filtered: List[Dict] = []
+            for it in page_listings:
+                k = self._listing_dedupe_key(it)
+                if not k:
+                    continue
+                if k in seen_global:
+                    continue
+                seen_global.add(k)
+                filtered.append(it)
+            page_listings = filtered
+            after_page = len(page_listings)
+            if after_page != before_page:
+                print(f"  Dedupe: {before_page} -> {after_page} unique listings on page {page}")
             
             # Get detailed information for each listing if requested
             if get_details:
@@ -2197,7 +2251,8 @@ class GumtreeScraper:
             
             time.sleep(self.config["scraping"]["delay"])
         
-        return listings
+        # Final global dedupe (extra safety)
+        return self._dedupe_listings(listings)
     
     def _save_html_for_debug(self, html: str, url: str):
         """
