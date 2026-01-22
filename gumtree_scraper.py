@@ -872,18 +872,56 @@ class GumtreeScraper:
         if id_match:
             details["job_id"] = id_match.group(1)
         
-        # Extract title
-        title_elem = soup.find("h1") or soup.find(["h1", "h2"], class_=re.compile(r"title", re.I))
-        if title_elem:
-            details["title"] = title_elem.get_text(strip=True)
-        else:
-            # Try to find title in meta tags
-            meta_title = soup.find("meta", property="og:title") or soup.find("meta", {"name": "title"})
-            if meta_title:
-                details["title"] = meta_title.get("content", "")
+        # Extract title (new Gumtree layout sometimes has unrelated <h1> like "Tips & help")
+        def _clean_title(t: str) -> str:
+            t = (t or "").strip()
+            # Remove common suffixes
+            t = re.sub(r"\s*\|\s*Gumtree.*$", "", t, flags=re.I).strip()
+            t = re.sub(r"\s*-\s*Gumtree.*$", "", t, flags=re.I).strip()
+            return t
+
+        bad_titles = {"tips & help", "tips and help", "help", "www.gumtree.com.au", "gumtree"}
+        candidates: List[str] = []
+
+        # Prefer OG title when available
+        meta_og = soup.find("meta", property="og:title")
+        if meta_og and meta_og.get("content"):
+            candidates.append(_clean_title(meta_og.get("content", "")))
+
+        meta_title = soup.find("meta", {"name": "title"})
+        if meta_title and meta_title.get("content"):
+            candidates.append(_clean_title(meta_title.get("content", "")))
+
+        # Collect all H1s and choose the most plausible one
+        for h1 in soup.find_all("h1"):
+            txt = _clean_title(h1.get_text(" ", strip=True))
+            if txt:
+                candidates.append(txt)
+
+        # Pick best candidate: not in bad list, reasonable length, and "most specific" (longest)
+        best = ""
+        for c in candidates:
+            c_norm = c.strip().lower()
+            if not c or c_norm in bad_titles:
+                continue
+            if len(c) < 3 or len(c) > 200:
+                continue
+            if len(c) > len(best):
+                best = c
+        if best:
+            details["title"] = best
         
         # Extract description - try multiple locations (get FULL description, not snippet)
         description = None
+
+        # NEW Gumtree detail layout: description is in #listing-description-content within #descriptionContainer
+        try:
+            desc_node = soup.select_one("#listing-description-content")
+            if desc_node:
+                description = desc_node.get_text(separator="\n", strip=True)
+                description = re.sub(r'\n{3,}', '\n\n', description)
+        except Exception:
+            pass
         
         # First, try to find description in common Gumtree locations
         # Look for elements with description-related classes or IDs
@@ -896,6 +934,8 @@ class GumtreeScraper:
         ]
         
         for desc_elem in desc_selectors:
+            if description and len(description) > 50:
+                break
             if desc_elem:
                 # Get full text, preserving line breaks
                 description = desc_elem.get_text(separator="\n", strip=True)
