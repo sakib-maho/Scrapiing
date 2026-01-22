@@ -428,6 +428,17 @@ class DataHandler:
         
         try:
             service = self._get_google_sheets_service()
+
+            # Determine sheet/tab name from configured range (default to Sheet1)
+            # Examples:
+            #   "Sheet1!A:Z" -> "Sheet1"
+            #   "Jobs!A:Z"   -> "Jobs"
+            sheet_name = "Sheet1"
+            try:
+                if isinstance(self.sheet_range, str) and "!" in self.sheet_range:
+                    sheet_name = self.sheet_range.split("!", 1)[0] or "Sheet1"
+            except Exception:
+                sheet_name = "Sheet1"
             
             # Read existing data to check for duplicates
             existing_data = self._read_existing_sheet_data()
@@ -502,7 +513,7 @@ class DataHandler:
             # Check if sheet is empty (first run)
             result = service.spreadsheets().values().get(
                 spreadsheetId=self.sheet_id,
-                range="Sheet1!A1:Z1"
+                range=f"{sheet_name}!A1:Z1"
             ).execute()
             
             values = result.get('values', [])
@@ -533,16 +544,16 @@ class DataHandler:
             # Determine range for append
             if not values:
                 # First run - write headers and data
-                range_name = f"Sheet1!A1"
+                range_name = f"{sheet_name}!A1"
             else:
                 # Append mode - find next empty row
                 result = service.spreadsheets().values().get(
                     spreadsheetId=self.sheet_id,
-                    range="Sheet1!A:A"
+                    range=f"{sheet_name}!A:A"
                 ).execute()
                 existing_rows = result.get('values', [])
                 next_row = len(existing_rows) + 1
-                range_name = f"Sheet1!A{next_row}"
+                range_name = f"{sheet_name}!A{next_row}"
             
             # Write data to sheet
             body = {
