@@ -2045,6 +2045,8 @@ class GumtreeScraper:
                         "  [category_retry] JS mode returned 0 listing links with suspicious title; "
                         "retrying once with cache_clear and fresh session."
                     )
+                    # Keep the original (non-empty) HTML around for debug if cache_clear returns empty.
+                    _best_html = html
                     try:
                         self.client.session_id = None
                     except Exception:
@@ -2079,12 +2081,64 @@ class GumtreeScraper:
                             f"elapsed={time.time() - attempt_started:.2f}s html_len={html_len} "
                             f"s_ad_links={ad_link_count} title={page_title!r} canonical={canonical!r}"
                         )
+                        # Track last non-empty HTML seen (even if it's not parseable) for debugging.
+                        if html.strip():
+                            _best_html = html
                         # If we got non-empty HTML, proceed with normal parsing.
                         if html.strip():
                             break
                         # Otherwise wait briefly and retry (transient Scrapfly empty content)
                         if js_try < js_empty_retries - 1:
                             time.sleep(js_retry_backoff_s)
+
+                    # If cache_clear retries returned empty HTML, fall back to best HTML we saw
+                    # so we can at least save it for debug rather than ending with an empty blob.
+                    if not html.strip() and _best_html and _best_html.strip():
+                        html = _best_html
+                        html_len = len(html)
+                        ad_link_count = html.count("/s-ad/")
+
+                    # Optional extra fallback: try a non-JS fetch once if JS returns empty/redirect-y content.
+                    # This sometimes succeeds when Scrapfly JS/CDP is flaky.
+                    if (
+                        ad_link_count == 0
+                        and page_title in ("www.gumtree.com.au", "Gumtree", "")
+                        and int(os.environ.get("CATEGORY_REDIRECT_FALLBACK_NONJS", "1")) == 1
+                    ):
+                        print("  [category_retry] Fallback: trying non-JS fetch once after JS redirect/empty.")
+                        try:
+                            self.client.session_id = None
+                        except Exception:
+                            pass
+                        r2_started = time.time()
+                        r2 = self.client.scrape_with_headers(
+                            url,
+                            headers=self.config["headers"],
+                            render_js=False,
+                            cache=False,
+                            cache_clear=True,
+                            _js_retry_once=True,
+                        )
+                        html2 = r2.get("html") or ""
+                        if html2.strip():
+                            html = html2
+                            html_len = len(html)
+                            ad_link_count = html.count("/s-ad/")
+                            try:
+                                _soup = BeautifulSoup(html, "lxml")
+                                page_title = (_soup.title.get_text(strip=True) if _soup.title else "")[:120]
+                                canonical = ""
+                                canon = _soup.find("link", rel="canonical")
+                                if canon and canon.get("href"):
+                                    canonical = str(canon.get("href"))[:200]
+                            except Exception:
+                                page_title = ""
+                                canonical = ""
+                        print(
+                            f"  [category_retry fallback_nonjs] success={bool(r2.get('success'))} "
+                            f"elapsed={time.time() - r2_started:.2f}s html_len={len(html2)} s_ad_links={html2.count('/s-ad/')} "
+                            f"title={page_title!r} canonical={canonical!r}"
+                        )
 
                 # If html is empty, treat like failure and retry
                 if not html.strip():
