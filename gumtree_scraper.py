@@ -6,7 +6,7 @@ import re
 import json
 import time
 from typing import Dict, List, Optional, Any
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import pytz
@@ -1860,9 +1860,10 @@ class GumtreeScraper:
         else:
             category_url = f"{self.gumtree_config['base_url']}/{category}"
         
-        # Remove any existing query parameters from base URL (we'll add them back if needed)
+        # Split path vs query so we can preserve incoming query params (e.g. ?sort=date)
         parsed_url = urlparse(category_url)
         base_path = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
+        base_query_params = parse_qs(parsed_url.query, keep_blank_values=True)
         
         listings = []
         # Global dedupe across pagination within a single job run.
@@ -1891,8 +1892,8 @@ class GumtreeScraper:
                 # Page 1: use URL as-is (no page number in path)
                 url = base_path
             
-            # Add location as query parameter if provided
-            params = {}
+            # Preserve any incoming query params (e.g. sort=date) and merge location if provided
+            params = dict(base_query_params)  # values are lists (parse_qs contract)
             if location:
                 # Handle None, null, or string "None"
                 if location is None or location == "None" or location == "null":
@@ -1904,7 +1905,7 @@ class GumtreeScraper:
                 
                 # Only add to params if location is not empty
                 if location:
-                    params["location"] = location
+                    params["location"] = [location]
             
             if params:
                 query_string = urlencode(params, doseq=True)
