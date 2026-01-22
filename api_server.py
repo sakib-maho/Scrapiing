@@ -157,8 +157,13 @@ def run_job_and_callback(job_id, params):
             if params["save_to_sheets"]:
                 success = data_handler.save_to_google_sheets(listings)
                 result["google_sheets_saved"] = success
+                result["google_sheets_error"] = getattr(data_handler, "last_sheets_error", None)
+                result["google_sheets_url"] = getattr(data_handler, "last_sheets_url", None)
                 if not success:
                     result["warning"] = "Failed to save to Google Sheets. Saved to local files as backup."
+            else:
+                result["google_sheets_saved"] = False
+                result["google_sheets_error"] = "save_to_sheets disabled"
 
             data_handler.save_json(listings)
             result["statistics"] = data_handler.get_statistics(listings)
@@ -166,7 +171,16 @@ def run_job_and_callback(job_id, params):
         payload = {
             "success": True,
             "jobId": job_id,
-            "secret": secret
+            "secret": secret,
+            # Include job metadata so n8n can tell whether Sheets write worked
+            "result": {
+                "listings_count": result.get("listings_count"),
+                "scraped_at": result.get("scraped_at"),
+                "google_sheets_saved": result.get("google_sheets_saved"),
+                "google_sheets_error": result.get("google_sheets_error"),
+                "google_sheets_url": result.get("google_sheets_url"),
+                "warning": result.get("warning"),
+            },
         }
 
         listings_json = json.dumps(listings, ensure_ascii=True)

@@ -45,6 +45,9 @@ class DataHandler:
         self.credentials_file = self.sheets_config.get("credentials_file", "credentials.json")
         self.token_file = self.sheets_config.get("token_file", "token.json")
         self.service = None
+        # Last Google Sheets write status (for debugging / API callback)
+        self.last_sheets_error: Optional[str] = None
+        self.last_sheets_url: Optional[str] = None
     
     def _ensure_output_dir(self):
         """Create output directory if it doesn't exist"""
@@ -404,16 +407,23 @@ class DataHandler:
         Returns:
             True if successful, False otherwise
         """
+        # Reset last status
+        self.last_sheets_error = None
+        self.last_sheets_url = None
+
         if not GOOGLE_SHEETS_AVAILABLE:
             print("Error: Google Sheets API libraries not installed")
+            self.last_sheets_error = "Google Sheets libraries not installed"
             return False
         
         if not self.sheet_id:
             print("Error: Google Sheets ID not configured")
+            self.last_sheets_error = "Google Sheets ID not configured"
             return False
         
         if not data:
             print("No data to save to Google Sheets")
+            self.last_sheets_error = "No data to save"
             return False
         
         try:
@@ -558,14 +568,17 @@ class DataHandler:
                 ).execute()
             
             print(f"Successfully appended {len(new_data)} records to Google Sheets")
-            print(f"Sheet URL: https://docs.google.com/spreadsheets/d/{self.sheet_id}/edit")
+            self.last_sheets_url = f"https://docs.google.com/spreadsheets/d/{self.sheet_id}/edit"
+            print(f"Sheet URL: {self.last_sheets_url}")
             return True
             
         except HttpError as error:
             print(f"Error writing to Google Sheets: {error}")
+            self.last_sheets_error = str(error)
             return False
         except Exception as e:
             print(f"Unexpected error saving to Google Sheets: {e}")
+            self.last_sheets_error = str(e)
             import traceback
             traceback.print_exc()
             return False
