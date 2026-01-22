@@ -1938,6 +1938,45 @@ class GumtreeScraper:
                     **kwargs,
                 )
 
+                # If Scrapfly itself is having transient issues (5xx), do a couple quick retries
+                # even when CATEGORY_RETRIES=1 (otherwise the job fails immediately).
+                try:
+                    status_code = int(result.get("status_code") or 0)
+                except Exception:
+                    status_code = 0
+                if not result.get("success") and status_code in (502, 503, 504):
+                    max_5xx_retries = int(os.environ.get("CATEGORY_5XX_RETRIES", "2"))
+                    backoff_s = float(os.environ.get("CATEGORY_5XX_RETRY_BACKOFF_S", "2"))
+                    for r in range(max_5xx_retries):
+                        # Small linear backoff (keep it short; category fetches are expensive)
+                        time.sleep(backoff_s * (r + 1))
+                        # Try to refresh session/caches on the last retry
+                        extra = {}
+                        if r == max_5xx_retries - 1:
+                            extra = {"cache": False, "cache_clear": True}
+                            try:
+                                self.client.session_id = None
+                            except Exception:
+                                pass
+                        attempt_started_5xx = time.time()
+                        result = self.client.scrape_with_headers(
+                            url,
+                            headers=self.config["headers"],
+                            **kwargs,
+                            **extra,
+                        )
+                        print(
+                            f"  [category_retry 5xx {r + 1}/{max_5xx_retries}] "
+                            f"render_js={kwargs.get('render_js')} status_code={status_code} "
+                            f"success={bool(result.get('success'))} elapsed={time.time() - attempt_started_5xx:.2f}s"
+                        )
+                        try:
+                            status_code = int(result.get("status_code") or 0)
+                        except Exception:
+                            status_code = 0
+                        if result.get("success"):
+                            break
+
                 if not result.get("success"):
                     last_error = result.get("error", "Unknown error")
                     print(
